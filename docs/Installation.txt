@@ -1,0 +1,10 @@
+# Start the service
+cp .env.example .env
+# Edit .env and config/development.yaml
+docker compose up --build
+
+# Run staging
+APP_ENV=staging docker compose up --build
+
+# Run production
+APP_ENV=production docker compose up --build -d
