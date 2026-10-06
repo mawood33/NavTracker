@@ -7,10 +7,12 @@ navixy:
 
 chatsurfer:
   base_url: "https://chatsurfer.nro.mil"
-  domain_id: "production"
+  domain_id: "chatsurferxmppunclass"
   nickname: "navtracker"
   classification: "UNCLASSIFIED//FOUO"
   user_high_classification: "UNCLASSIFIED//FOUO"
+  client_cert: "/data/certs/client/tls.crt"
+  client_key: "/data/certs/client/tls.key"
   rate_limit: 20
   max_message_size: 4000
   encryption_required: true

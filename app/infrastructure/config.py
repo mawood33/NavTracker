@@ -21,6 +21,8 @@ class Settings:
     chatsurfer_nickname: str
     chatsurfer_classification: str
     chatsurfer_user_high_classification: str
+    chatsurfer_client_cert: str
+    chatsurfer_client_key: str
     chatsurfer_rate_limit: float
     chatsurfer_max_message_size: int
     chatsurfer_encryption_required: bool
@@ -100,6 +102,20 @@ def load_settings() -> Settings:
             chatsurfer.get(
                 "user_high_classification",
                 "UNCLASSIFIED//FOUO",
+            ),
+        ),
+        chatsurfer_client_cert=_env(
+            "CHAT_SURFER_CLIENT_CERT",
+            chatsurfer.get(
+                "client_cert",
+                "/data/certs/client/tls.crt",
+            ),
+        ),
+        chatsurfer_client_key=_env(
+            "CHAT_SURFER_CLIENT_KEY",
+            chatsurfer.get(
+                "client_key",
+                "/data/certs/client/tls.key",
             ),
         ),
         chatsurfer_rate_limit=float(

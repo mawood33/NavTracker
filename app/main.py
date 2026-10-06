@@ -41,6 +41,8 @@ async def main() -> None:
         max_message_size=settings.chatsurfer_max_message_size,
         encryption_required=settings.chatsurfer_encryption_required,
         crypto_handler=crypto_handler,
+        client_cert=settings.chatsurfer_client_cert,
+        client_key=settings.chatsurfer_client_key,
     )
 
     navixy_api = NavixyApiClient(

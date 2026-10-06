@@ -22,6 +22,8 @@ class ChatSurferApiClient:
         encryption_required: bool,
         crypto_handler: CryptoHandler | None = None,
         timeout_seconds: float = 15,
+        client_cert: str | None = None,
+        client_key: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.domain_id = domain_id
@@ -40,7 +42,16 @@ class ChatSurferApiClient:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
+            cert=self._cert_tuple(client_cert, client_key),
         )
+
+    @staticmethod
+    def _cert_tuple(
+        client_cert: str | None, client_key: str | None
+    ) -> tuple[str, str] | None:
+        if not client_cert or not client_key:
+            return None
+        return (client_cert, client_key)
 
     async def close(self) -> None:
         await self.client.aclose()
