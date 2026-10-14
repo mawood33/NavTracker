@@ -8,6 +8,8 @@ navixy:
 chatsurfer:
   base_url: "https://chatsurfer.nro.mil"
   domain_id: "chatsurferxmppunclass"
+  room_name: "freedom_flag"
+  room_name_encrypted: "freedom_flag_encrypted"
   nickname: "navtracker-dev"
   classification: "UNCLASSIFIED//FOUO"
   user_high_classification: "UNCLASSIFIED//FOUO"
@@ -15,8 +17,13 @@ chatsurfer:
   client_key: "/data/certs/client/tls.key"
   rate_limit: 60
   max_message_size: 4000
-  encryption_required: false
+  encryption_required: true
 
+# mode: pem, update cert/key to tls.crt/tls.key
+# mode: ssh, update cert/key to id_rsa.pub/id_rsa
+# mode: fernet, remove tls.crt/tls.key from /data/certs/client dir since that is default
 crypto:
-  public_key_path: "/run/secrets/public_key.pem"
-  private_key_path: "/run/secrets/private_key.pem"
+  encryption_cert: "/data/certs/client/tls.crt"
+  encryption_key: "/data/certs/client/tls.key"
+  mode: pem
+  fernet_key: None

@@ -23,15 +23,30 @@ async def main() -> None:
 
     crypto_handler = None
     if settings.chatsurfer_encryption_required:
-        crypto_handler = CryptoHandler(
-            public_key_path=settings.public_key_path,
-            private_key_path=None,
-        )
+        if settings.mode == "ssh":
+            crypto_handler = CryptoHandler(
+                mode=settings.mode,
+                public_key_path=settings.encryption_cert,
+                private_key_path=None,
+            )
+        elif settings.mode == "fernet":
+            crypto_handler = CryptoHandler(
+                mode=settings.mode,
+                public_key_path=None,
+                private_key_path=None,
+            )
+        else:
+            crypto_handler = CryptoHandler(
+                public_key_path=settings.encryption_cert,
+                private_key_path=None,
+            )
 
     chat_client = ChatSurferApiClient(
         base_url=settings.chatsurfer_base_url,
         api_key=settings.chatsurfer_api_key,
         domain_id=settings.chatsurfer_domain_id,
+        room_name=settings.chatsurfer_room_name,
+        room_name_encrypted=settings.chatsurfer_room_name_encrypted,
         nickname=settings.chatsurfer_nickname,
         classification=settings.chatsurfer_classification,
         user_high_classification=(
@@ -57,13 +72,11 @@ async def main() -> None:
                 api_key=settings.navixy_api_key,
             )
 
-            logging.info(f'Source: {source}')
             service = TrackerWebSocketService(
                 source=source,
                 publisher=chat_client,
                 tracker_ids=settings.tracker_ids,
             )
-            logging.info(f'Service: {service}')
         else:
             service = TrackerPollingService(
                 source=navixy_api,
@@ -71,7 +84,7 @@ async def main() -> None:
                 tracker_ids=settings.tracker_ids,
                 interval_seconds=settings.poll_interval_seconds,
             )
-        logging.info(f'running with source_mode: {settings.source_mode}')
+        logging.info(f'Tracker API source mode: {settings.source_mode}')
         await service.run()
     except Exception as e:
         logging.exception(f'Error starting app: {e}')

@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -7,6 +8,7 @@ from app.domain.entities import TrackerPosition
 from .crypto import CryptoHandler
 from .limiter import RateLimiter
 
+logger = logging.getLogger(__name__)
 
 class ChatSurferApiClient:
     def __init__(
@@ -14,6 +16,8 @@ class ChatSurferApiClient:
         base_url: str,
         api_key: str,
         domain_id: str,
+        room_name: str,
+        room_name_encrypted: str,
         nickname: str,
         classification: str,
         user_high_classification: str,
@@ -27,6 +31,8 @@ class ChatSurferApiClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.domain_id = domain_id
+        self.room_name = room_name
+        self.room_name_encrypted = room_name_encrypted
         self.nickname = nickname
         self.classification = classification
         self.user_high_classification = user_high_classification
@@ -62,8 +68,7 @@ class ChatSurferApiClient:
             separators=(",", ":"),
         )
 
-        room_name = "freedom_flag_encrypted"
-
+        room_name = self.room_name
         if self.encryption_required:
             if self.crypto_handler is None:
                 raise RuntimeError(
@@ -71,9 +76,10 @@ class ChatSurferApiClient:
                 )
 
             message = self.crypto_handler.encrypt(message)
-            room_name = "freedom_flag_encrypted"
+            room_name = self.room_name_encrypted
 
         message = self._fit_message_limit(message)
+        logger.debug(f'Publish to ChatSurfer: room-{self.room_name}, nickname-{self.nickname}, encryption-{self.encryption_required}')
 
         await self.rate_limiter.acquire()
 
@@ -83,7 +89,7 @@ class ChatSurferApiClient:
                 "classification": self.classification,
                 "domainId": self.domain_id,
                 "message": message,
-                "nickName": self.nickname,
+                "nickname": self.nickname,
                 "roomName": room_name,
                 "userHighClassification": self.user_high_classification
             },
