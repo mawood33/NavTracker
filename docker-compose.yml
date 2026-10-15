@@ -5,7 +5,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./keys:/run/secrets:ro
+      - ~/workspace/data/certs/client:/data/certs/client:ro
     read_only: true
     security_opt:
       - no-new-privileges:true

@@ -18,16 +18,21 @@ class Settings:
     chatsurfer_base_url: str
     chatsurfer_api_key: str
     chatsurfer_domain_id: str
+    chatsurfer_room_name: str
+    chatsurfer_room_name_encrypted: str
     chatsurfer_nickname: str
     chatsurfer_classification: str
     chatsurfer_user_high_classification: str
+    chatsurfer_client_cert: str
+    chatsurfer_client_key: str
     chatsurfer_rate_limit: float
     chatsurfer_max_message_size: int
     chatsurfer_encryption_required: bool
 
-    public_key_path: str
-    private_key_path: str
-
+    encryption_cert: str
+    encryption_key: str
+    mode: str
+    fernet_key: bytes
 
 def _env(name: str, default: str | None = None) -> str:
     value = os.getenv(name, default)
@@ -39,7 +44,6 @@ def _env(name: str, default: str | None = None) -> str:
 def load_settings() -> Settings:
     environment = os.getenv("APP_ENV", "development")
     config_path = Path(f"config/{environment}.yaml")
-
     with config_path.open("r", encoding="utf-8") as file:
         config = yaml.safe_load(file) or {}
 
@@ -87,6 +91,14 @@ def load_settings() -> Settings:
             "CHAT_SURFER_DOMAIN_ID",
             chatsurfer.get("domain_id"),
         ),
+        chatsurfer_room_name=_env(
+            "CHAT_SURFER_ROOM_NAME",
+            chatsurfer.get("room_name"),
+        ),
+        chatsurfer_room_name_encrypted=_env(
+            "CHAT_SURFER_ROOM_NAME_ENCRYPTED",
+            chatsurfer.get("room_name_encrypted"),
+        ),
         chatsurfer_nickname=_env(
             "CHAT_SURFER_NICKNAME",
             chatsurfer.get("nickname", "navtracker"),
@@ -100,6 +112,20 @@ def load_settings() -> Settings:
             chatsurfer.get(
                 "user_high_classification",
                 "UNCLASSIFIED//FOUO",
+            ),
+        ),
+        chatsurfer_client_cert=_env(
+            "CHAT_SURFER_CLIENT_CERT",
+            chatsurfer.get(
+                "client_cert",
+                "/data/certs/client/tls.crt",
+            ),
+        ),
+        chatsurfer_client_key=_env(
+            "CHAT_SURFER_CLIENT_KEY",
+            chatsurfer.get(
+                "client_key",
+                "/data/certs/client/tls.key",
             ),
         ),
         chatsurfer_rate_limit=float(
@@ -121,12 +147,20 @@ def load_settings() -> Settings:
             ).lower()
             == "true"
         ),
-        public_key_path=_env(
-            "PUBLIC_KEY_PATH",
-            crypto.get("public_key_path", "/run/secrets/public_key.pem"),
+        encryption_cert=_env(
+            "ENCRYPTION_CERT",
+            crypto.get("encryption_cert", "/data/certs/client/tls.crt"),
         ),
-        private_key_path=_env(
-            "PRIVATE_KEY_PATH",
-            crypto.get("private_key_path", "/run/secrets/private_key.pem"),
+        encryption_key=_env(
+            "ENCRYPTION_KEY",
+            crypto.get("encryption_key", "/data/certs/client/tls.key"),
+        ),
+        mode=_env(
+            "MODE",
+            crypto.get("mode", "pem"),
+        ),
+        fernet_key=_env(
+            "FERNET_KEY",
+            crypto.get("fernet_key", None),
         ),
     )
