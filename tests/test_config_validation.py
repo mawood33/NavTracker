@@ -153,7 +153,8 @@ def test_startup_check_does_not_call_the_network(monkeypatch):
     validate_environment("production")
 
 
-def test_cli_reports_an_unknown_environment(capsys):
+def test_cli_reports_an_unknown_environment(monkeypatch, capsys):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert main(["qa"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
