@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Protocol
 from urllib.parse import parse_qs, unquote
 
+from analytics.domain.access import AuthPolicy, authorize
 from analytics.domain.aoi import AreaOfInterest
 from analytics.domain.behavior import Mill, Slowdown, Stop
 from analytics.domain.export import (
@@ -53,7 +54,7 @@ class AnalyticsSnapshot(Protocol):
         """MSR corridor buffer in meters."""
 
     def basemap(self) -> Mapping[str, object]:
-        """Configured tile provider. No API key is included."""
+        """Configured tile provider. The public map token may be in the tile URL."""
 
     def routing_info(self) -> Mapping[str, object]:
         """Configured routing engine and vehicle profiles."""
@@ -81,14 +82,18 @@ class AnalyticsSnapshot(Protocol):
     def ingest_event(
         self,
         payload: Mapping[str, object],
-        source_id: str = "event",
+        source_id: str = "",
     ) -> Mapping[str, object]:
         """Accept one JSON event."""
 
     def ingest_tacrep_body(self, body: str, source_id: str) -> Mapping[str, object]:
-        """Accept one TACREP line."""
+        """Accept one TACREP body. The source is the room or X-Source-Id."""
 
-    def ingest_batch(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+    def ingest_batch(
+        self,
+        payload: Mapping[str, object],
+        source_id: str = "",
+    ) -> Mapping[str, object]:
         """Accept a batch of events."""
 
     def correlations_document(self) -> Mapping[str, object]:
@@ -112,6 +117,9 @@ class AnalyticsSnapshot(Protocol):
     def save_upload(self, filename: str, body: bytes) -> Mapping[str, int]:
         """Store one reference file and reload."""
 
+    def save_coord_card(self, filename: str, body: bytes) -> Mapping[str, int]:
+        """Replace the exercise coord card after it validates."""
+
 
 def route_request(
     method: str,
@@ -119,6 +127,7 @@ def route_request(
     body: bytes,
     headers: Mapping[str, str],
     snapshot: AnalyticsSnapshot,
+    auth: AuthPolicy | None = None,
 ) -> tuple[int, dict[str, object] | str, str]:
     """Return status, a JSON object or text, and a content type.
 
@@ -128,6 +137,10 @@ def route_request(
     path_only, _, query = path.partition("?")
     target = path_only.rstrip("/") or "/"
     params = {key: values[-1] for key, values in parse_qs(query).items()}
+    if auth is not None:
+        denied = authorize(auth, method, target, headers, params)
+        if denied is not None:
+            return _error(denied, "unauthorized", "unauthorized")
     if method == "GET" and target == "/health":
         return _json(200, dict(snapshot.health()))
     if method == "GET" and target == "/events":
@@ -162,11 +175,13 @@ def route_request(
     if method == "POST" and target.startswith("/api/sites/") and target.endswith("/verify"):
         return _verify_site(target, snapshot)
     if method == "POST" and target == "/v1/events":
-        return _ingest_events(body, snapshot, batch=False, tacrep=False)
+        return _ingest_events(body, headers, snapshot, batch=False, tacrep=False)
     if method == "POST" and target == "/v1/events/tacrep":
-        return _ingest_events(body, snapshot, batch=False, tacrep=True)
+        return _ingest_events(body, headers, snapshot, batch=False, tacrep=True)
     if method == "POST" and target == "/v1/events/batch":
-        return _ingest_events(body, snapshot, batch=True, tacrep=False)
+        return _ingest_events(body, headers, snapshot, batch=True, tacrep=False)
+    if method == "POST" and target == "/v1/coord-card":
+        return _coord_card(body, headers, snapshot)
     if method == "GET" and target == "/v1/events/correlations":
         return _json(200, dict(snapshot.correlations_document()))
     if method == "GET" and target == "/v1/activities":
@@ -265,29 +280,51 @@ def _advance_activity(
 
 def _ingest_events(
     body: bytes,
+    headers: Mapping[str, str],
     snapshot: AnalyticsSnapshot,
     *,
     batch: bool,
     tacrep: bool,
 ) -> tuple[int, dict[str, object] | str, str]:
     try:
+        payload = _object(body)
+        source = _source_id(headers, payload)
         if tacrep:
             text = body.decode("utf-8")
-            payload = _object(body)
             if payload is not None and isinstance(payload.get("tacrep"), str):
                 text = str(payload["tacrep"])
-                source = str(payload.get("source_id", "tacrep") or "tacrep")
-            else:
-                source = "tacrep"
             return _json(200, dict(snapshot.ingest_tacrep_body(text, source)))
-        payload = _object(body)
         if payload is None:
             return _error(400, "Expected a JSON object.", "invalid_json")
         if batch:
-            return _json(200, dict(snapshot.ingest_batch(payload)))
-        return _json(200, dict(snapshot.ingest_event(payload)))
+            return _json(200, dict(snapshot.ingest_batch(payload, source)))
+        return _json(200, dict(snapshot.ingest_event(payload, source)))
     except ValueError as exc:
         return _error(400, str(exc), "invalid_event")
+
+
+def _coord_card(
+    body: bytes,
+    headers: Mapping[str, str],
+    snapshot: AnalyticsSnapshot,
+) -> tuple[int, dict[str, object] | str, str]:
+    filename = headers.get("x-filename", "coord-card.yaml").strip() or "coord-card.yaml"
+    try:
+        return _json(200, dict(snapshot.save_coord_card(filename, body)))
+    except ValueError as exc:
+        return _error(400, str(exc), "invalid_coord_card")
+
+
+def _source_id(headers: Mapping[str, str], payload: Mapping[str, object] | None) -> str:
+    header = headers.get("x-source-id", "").strip()
+    if header:
+        return header
+    if payload is None:
+        return ""
+    raw = payload.get("source_id", "")
+    if isinstance(raw, str):
+        return raw.strip()
+    return ""
 
 
 def _object(body: bytes) -> dict[str, object] | None:
@@ -523,6 +560,9 @@ def _evidence(item: Evidence) -> dict[str, object]:
         "source": item.source,
         "layer": item.layer,
         "message_id": item.message_id,
+        "tacrep_type": item.tacrep_type,
+        "block": item.block,
+        "warning": item.warning,
     }
 
 

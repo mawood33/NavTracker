@@ -97,6 +97,20 @@ _SETTING_NAMES = (
     "ANALYTICS_MAP_CENTER_LATITUDE",
     "ANALYTICS_MAP_CENTER_LONGITUDE",
     "ANALYTICS_MAP_ZOOM",
+    "ANALYTICS_HTTP_HOST",
+    "ANALYTICS_READ_TOKEN",
+    "ANALYTICS_WRITE_TOKEN",
+    "ANALYTICS_WS_ORIGINS",
+    "ANALYTICS_MAX_BODY_BYTES",
+    "ANALYTICS_MAX_UPLOAD_BYTES",
+    "ANALYTICS_MAX_WS_BYTES",
+    "ANALYTICS_MAX_ARCHIVE_ENTRIES",
+    "ANALYTICS_MAX_ARCHIVE_BYTES",
+    "ANALYTICS_MAX_WS_QUEUE",
+    "ANALYTICS_FIX_RETENTION_SECONDS",
+    "ANALYTICS_COORD_CARD",
+    "ANALYTICS_COORD_MISMATCH_METERS",
+    "ANALYTICS_CORRELATION_NEIGHBOR_K",
 )
 
 
@@ -135,16 +149,45 @@ def validate_analytics_environment(
     return built.settings
 
 
+def deployment_warnings(settings: AnalyticsSettings) -> tuple[str, ...]:
+    """Staging and production notes. They do not fail the process."""
+
+    if settings.environment not in {"staging", "production"}:
+        return ()
+    found: list[str] = []
+    if not settings.read_token or not settings.write_token:
+        found.append(f"APP_ENV={settings.environment} analytics read/write tokens are unset")
+    public_osrm = "router.project-osrm.org" in settings.routing_base_url
+    if settings.routing_engine == "osrm" or public_osrm:
+        found.append(f"APP_ENV={settings.environment} routing uses public OSRM")
+    if settings.map_provider in {"leaflet", "osm"}:
+        found.append(f"APP_ENV={settings.environment} basemap uses public OSM tiles")
+    placeholder = "clairvoyant.example" in settings.clairvoyant_base_url or (
+        "clairvoyant.example" in settings.clairvoyant_ws_url
+    )
+    if settings.clairvoyant_enabled and (placeholder or not settings.clairvoyant_api_key):
+        found.append(
+            f"APP_ENV={settings.environment} Clairvoyant uses a placeholder endpoint or key"
+        )
+    return tuple(found)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     requested = list(argv) if argv else list(ENVIRONMENTS)
     ok = True
     for environment in requested:
         try:
-            validate_analytics_environment(environment)
+            settings = validate_analytics_environment(environment)
         except AnalyticsConfigError as exc:
             print(exc, file=sys.stderr)
             _emit_github_warning(exc)
             ok = False
+            continue
+        for warning in deployment_warnings(settings):
+            print(warning, file=sys.stderr)
+            _emit_github_warning(
+                AnalyticsConfigError(settings.environment, "deployment", warning)
+            )
     if ok:
         print("Analytics config check passed: " + ", ".join(requested))
         return 0

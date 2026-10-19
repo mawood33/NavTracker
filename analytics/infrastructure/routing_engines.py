@@ -5,8 +5,11 @@ callable. Tests pass a fake. ``build_router`` installs a live fetch
 only for the selected engine; nothing calls it until a route request.
 """
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
+
+import httpx
 
 from analytics.domain.reference import Msr
 from analytics.domain.routing import (
@@ -85,7 +88,7 @@ class RoutingFacade:
                     self.primary.route(origin, destination, profile),
                     profile,
                 )
-            except RoutingError:
+            except (RoutingError, TimeoutError, OSError, json.JSONDecodeError, httpx.HTTPError):
                 produced = None
             if produced is not None:
                 return self.cache.put(key, produced)
@@ -375,18 +378,21 @@ def _live_fetch(
     payload: Mapping[str, object] | None,
     timeout_seconds: float = 15,
 ) -> object:
-    import httpx
-
     timeout = timeout_seconds
-    if payload is not None:
-        response = httpx.post(url, json=dict(payload), timeout=timeout)
-    elif params:
-        response = httpx.get(url, params=dict(params), timeout=timeout)
-    else:
-        response = httpx.get(url, timeout=timeout)
-    if response.status_code >= 400:
-        raise RoutingError("Routing engine request failed.")
-    body = response.json()
+    try:
+        if payload is not None:
+            response = httpx.post(url, json=dict(payload), timeout=timeout)
+        elif params:
+            response = httpx.get(url, params=dict(params), timeout=timeout)
+        else:
+            response = httpx.get(url, timeout=timeout)
+        if response.status_code >= 400:
+            raise RoutingError("Routing engine request failed.")
+        body = response.json()
+    except RoutingError:
+        raise
+    except (httpx.HTTPError, json.JSONDecodeError, TimeoutError, OSError) as exc:
+        raise RoutingError("Routing engine request failed.") from exc
     if not isinstance(body, dict):
         raise RoutingError("Routing engine returned an unexpected body.")
     return body

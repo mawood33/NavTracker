@@ -375,6 +375,9 @@ def _evidence_rows(sites: Sequence[Site]) -> list[dict[str, object]]:
                     "layer": item.layer,
                     "message_id": item.message_id,
                     "detail": item.detail,
+                    "tacrep_type": item.tacrep_type,
+                    "block": item.block,
+                    "warning": item.warning,
                 }
             )
     return rows
@@ -447,6 +450,9 @@ def _evidence_features(
                         "source": item.source,
                         "layer": item.layer,
                         "message_id": item.message_id,
+                        "tacrep_type": item.tacrep_type,
+                        "block": item.block,
+                        "warning": item.warning,
                         "observed_at": None
                         if item.observed_at is None
                         else item.observed_at.isoformat(),

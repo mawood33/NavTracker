@@ -1,0 +1,4 @@
+name,kind,start,end,mismatch_meters,fields
+IMINT,I,100,199,250,"callsign,id,mgrs,latlon,azimuth,speed,event,remarks"
+MTI,J,400,499,250,"callsign,id,mgrs,latlon,azimuth,speed,event"
+ELINT,E,700,799,250,"callsign,id,mgrs,latlon,azimuth,speed,event"

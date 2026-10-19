@@ -25,3 +25,8 @@ class H3Index:
         for latitude, longitude in h3.cell_to_boundary(cell_id):
             ring.append((float(latitude), float(longitude)))
         return tuple(ring)
+
+    def disk(self, cell_id: str, k: int) -> tuple[str, ...]:
+        if k <= 0:
+            return (cell_id,)
+        return tuple(str(cell) for cell in h3.grid_disk(cell_id, k))

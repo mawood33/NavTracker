@@ -2,6 +2,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from analytics.domain.timeutil import ensure_utc, valid_position
+
 
 @dataclass(frozen=True)
 class GpsFix:
@@ -81,7 +83,13 @@ def fix_from_mapping(
     latitude = _float_field(payload, "latitude", "lat")
     longitude = _float_field(payload, "longitude", "lon", "lng")
     timestamp = _timestamp(payload.get("timestamp"))
-    if vehicle is None or latitude is None or longitude is None or timestamp is None:
+    if (
+        vehicle is None
+        or latitude is None
+        or longitude is None
+        or timestamp is None
+        or not valid_position(latitude, longitude)
+    ):
         return None
     speed = _speed(payload, speed_unit)
     heading = _float_field(payload, "heading")
@@ -137,7 +145,7 @@ def _speed(payload: Mapping[str, object], speed_unit: str) -> float | None:
 
 def _timestamp(value: object) -> datetime | None:
     if isinstance(value, datetime):
-        return value
+        return ensure_utc(value)
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip().replace("Z", "+00:00")
@@ -145,7 +153,7 @@ def _timestamp(value: object) -> datetime | None:
         parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
-    return parsed
+    return ensure_utc(parsed)
 
 
 def seconds_between(start: datetime, end: datetime) -> float:

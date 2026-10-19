@@ -1,0 +1,20 @@
+# FAKE exercise coord card. NavTracker does not load this file unless
+# ANALYTICS_COORD_CARD or analytics.coord_card points at it. The block
+# numbers below are examples for a made-up exercise, not a live default.
+mismatch_meters: 250
+types:
+  - name: IMINT
+    kind: I
+    start: 100
+    end: 199
+    fields: [callsign, id, mgrs, latlon, azimuth, speed, event, remarks]
+  - name: MTI
+    kind: J
+    start: 400
+    end: 499
+    fields: [callsign, id, mgrs, latlon, azimuth, speed, event]
+  - name: ELINT
+    kind: E
+    start: 700
+    end: 799
+    fields: [callsign, id, mgrs, latlon, azimuth, speed, event]

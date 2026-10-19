@@ -1,8 +1,12 @@
 """Non-GPS reports attached to sites, hex cells, and MSR corridors.
 
-The primary TACREP line is ``KIND-seq//time//lat,lon//key=value``.
-Kinds are ``O``, ``I``, ``J``, ``E``, and ``UNKNOWN``. A ChatSurfer
-room can also send JSON or the older text form below.
+The primary TACREP shape is the exercise coord card: callsign, serial
+id, MGRS, decimal lat/lon, azimuth, speed in miles per hour, and an
+event, split on ``//``. ``KIND-seq//time//lat,lon//key=value`` remains
+a fallback. Kinds on that fallback are ``O``, ``I``, ``J``, ``E``, and
+``UNKNOWN``. A ChatSurfer room can also send JSON or the older text
+form below. A coord-card or KIND-seq body is correlated once and is
+not also stored as one of these reports.
 
 JSON keys: ``type`` / ``activity`` / ``category``, ``latitude`` or
 ``lat``, ``longitude`` or ``lon``, ``timestamp`` / ``time`` / ``dtg``,
@@ -104,6 +108,9 @@ class Report:
     subject: str = ""
     bmoa: str = ""
     msr_name: str = ""
+    tacrep_type: str = ""
+    block_label: str = ""
+    warning: str = ""
 
 
 def report_key(report: Report) -> tuple[str, str, str]:
@@ -300,6 +307,9 @@ def report_document(report: Report) -> dict[str, object]:
         "site_type": report.site_type,
         "summary": report.summary,
         "keywords": list(report.keywords),
+        "tacrep_type": report.tacrep_type,
+        "block": report.block_label,
+        "warning": report.warning,
     }
 
 
@@ -319,6 +329,9 @@ def _report_from_tacrep(message: TacrepMessage) -> Report:
         subject=message.subject,
         bmoa=message.bmoa,
         msr_name=message.msr,
+        tacrep_type=message.tacrep_type,
+        block_label=message.block_label,
+        warning=message.block_warning,
     )
 
 

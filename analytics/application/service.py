@@ -4,10 +4,12 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
+from analytics.domain.access import AuthPolicy
 from analytics.domain.aoi import AreaOfInterest, derive_areas
 from analytics.domain.assessment import (
     SiteActivity,
@@ -24,16 +26,19 @@ from analytics.domain.behavior import (
     detect_slowdowns,
     detect_stops,
 )
+from analytics.domain.coordcard import CoordCard, parse_coord_card_text
 from analytics.domain.correlation import (
     Activity,
     Correlation,
+    CorrelationPolicy,
+    TacrepBlock,
     TacrepMessage,
     advance_for_gap,
     correlate,
     dedupe_messages,
     manual_advance,
     message_from_event,
-    parse_tacrep_line,
+    session_labels,
     state_site_type,
 )
 from analytics.domain.grid import CellActivity, aggregate_cells
@@ -60,10 +65,13 @@ from analytics.domain.routing import (
     reject_unsupported_vehicle,
     route_document,
 )
+from analytics.domain.tacrep_parse import parse_tacrep_body
+from analytics.domain.timeutil import ensure_utc, valid_position
 from analytics.domain.tracks import GpsFix, dedupe_fixes, fix_from_mapping
 from analytics.infrastructure.config import AnalyticsSettings
 from analytics.infrastructure.h3_index import H3Index
 from analytics.infrastructure.http_api import event_document
+from analytics.infrastructure.mgrs_grid import MgrsLibrary
 from analytics.infrastructure.reference_parse import load_reference_dir, load_reference_file
 from analytics.infrastructure.routing_engines import build_router
 from analytics.infrastructure.websocket import OutputHub
@@ -71,8 +79,6 @@ from navtracker_common.chatsurfer import ChatSurferApiClient
 from navtracker_common.errors import PublicationError
 
 logger = logging.getLogger(__name__)
-
-_MAX_FIXES = 5000
 
 
 class ReportSource(Protocol):
@@ -131,6 +137,10 @@ class AnalyticsService:
         self._report_cursors: dict[str, str] = {}
         self._published = ""
         self._lock = asyncio.Lock()
+        self._mgrs = MgrsLibrary()
+        self._coord_card = CoordCard(mismatch_meters=settings.coord_mismatch_meters)
+        self._coord_card_file = _coord_card_file(settings.coord_card_path)
+        self._load_coord_card_file()
 
     def load_reference(self) -> dict[str, int]:
         directory = self.settings.reference_dir.strip()
@@ -170,9 +180,13 @@ class AnalyticsService:
     def add_fixes(self, fixes: list[GpsFix]) -> None:
         if not fixes:
             return
-        self._fixes.extend(fixes)
-        if len(self._fixes) > _MAX_FIXES:
-            self._fixes = self._fixes[-_MAX_FIXES:]
+        kept: list[GpsFix] = []
+        for fix in fixes:
+            if not valid_position(fix.latitude, fix.longitude):
+                continue
+            kept.append(replace(fix, timestamp=ensure_utc(fix.timestamp)))
+        self._fixes.extend(kept)
+        self._fixes = _retain_fixes(self._fixes, self.settings.fix_retention_seconds)
 
     def analyze(self) -> None:
         deduped = dedupe_fixes(
@@ -189,11 +203,11 @@ class AnalyticsService:
             self.settings.thresholds,
         )
         as_of = max(
-            (fix.timestamp for fix in deduped),
+            (ensure_utc(fix.timestamp) for fix in deduped),
             default=datetime.now(UTC),
         )
         as_of = max(
-            [as_of, *(report.observed_at for report in self._reports)],
+            [as_of, *(ensure_utc(report.observed_at) for report in self._reports)],
         )
         self._cells = aggregate_cells(
             self._stops,
@@ -206,7 +220,7 @@ class AnalyticsService:
             self._reports,
             self.settings.report_policy,
         )
-        self._correlations = correlate(self._messages, self.settings.correlation)
+        self._refresh_correlations()
         self._sites = update_sites(
             self._sites,
             self._areas,
@@ -332,7 +346,10 @@ class AnalyticsService:
     def add_reports(self, reports: list[Report]) -> None:
         if not reports:
             return
-        combined = dedupe_reports((*self._reports, *reports))
+        normalized = [
+            replace(report, observed_at=ensure_utc(report.observed_at)) for report in reports
+        ]
+        combined = dedupe_reports((*self._reports, *normalized))
         self._reports = combined[-2000:]
 
     def add_messages(self, messages: list[TacrepMessage]) -> None:
@@ -340,6 +357,8 @@ class AnalyticsService:
             return
         stamped: list[TacrepMessage] = []
         for message in messages:
+            if not valid_position(message.latitude, message.longitude):
+                continue
             cell_id = self._index.cell_id(message.latitude, message.longitude)
             bmoa = message.bmoa
             if not bmoa:
@@ -357,28 +376,16 @@ class AnalyticsService:
                 if route is not None:
                     msr_name = route.name
             stamped.append(
-                TacrepMessage(
-                    kind=message.kind,
-                    sequence=message.sequence,
-                    observed_at=message.observed_at,
-                    latitude=message.latitude,
-                    longitude=message.longitude,
-                    source_id=message.source_id,
-                    source_message_id=message.source_message_id,
-                    subject=message.subject,
-                    speed_mps=message.speed_mps,
-                    heading=message.heading,
-                    length_m=message.length_m,
-                    width_m=message.width_m,
-                    reported_confidence=message.reported_confidence,
+                replace(
+                    message,
+                    observed_at=ensure_utc(message.observed_at),
+                    cell_id=cell_id,
                     bmoa=bmoa,
                     msr=msr_name,
-                    cell_id=cell_id,
-                    raw=message.raw,
                 )
             )
         self._messages = dedupe_messages((*self._messages, *stamped))[-2000:]
-        self._correlations = correlate(self._messages, self.settings.correlation)
+        self._refresh_correlations()
 
     def api_sites(self) -> list[dict[str, object]]:
         return [_api_site(site) for site in self._sites]
@@ -431,38 +438,80 @@ class AnalyticsService:
     def ingest_event(
         self,
         payload: Mapping[str, object],
-        source_id: str = "event",
+        source_id: str = "",
     ) -> dict[str, object]:
-        message = message_from_event(payload, source_id=source_id)
-        if message is None:
+        messages = self._messages_from_payload(payload, source_id)
+        if not messages:
             raise ValueError("unreadable event")
-        self.add_messages([message])
-        return {"accepted": 1}
+        self.add_messages(messages)
+        return {"accepted": len(messages)}
 
     def ingest_tacrep_body(self, body: str, source_id: str) -> dict[str, object]:
-        message = parse_tacrep_line(body, source_id=source_id)
-        if message is None:
+        messages = list(
+            parse_tacrep_body(
+                body,
+                source_id=source_id,
+                card=self._coord_card,
+                grid=self._mgrs,
+                policy=self._policy(),
+            )
+        )
+        if not messages:
             raise ValueError("unreadable tacrep")
-        self.add_messages([message])
-        return {"accepted": 1}
+        self.add_messages(messages)
+        return {"accepted": len(messages)}
 
-    def ingest_batch(self, payload: Mapping[str, object]) -> dict[str, object]:
+    def ingest_batch(
+        self,
+        payload: Mapping[str, object],
+        source_id: str = "",
+    ) -> dict[str, object]:
         raw = payload.get("events", payload.get("messages", []))
         if not isinstance(raw, list):
             raise ValueError("events must be a list")
-        accepted = 0
+        batch_source = str(payload.get("source_id") or source_id)
+        found: list[TacrepMessage] = []
         for item in raw:
             if isinstance(item, str):
-                message = parse_tacrep_line(item, source_id="batch")
+                found.extend(
+                    parse_tacrep_body(
+                        item,
+                        source_id=batch_source,
+                        card=self._coord_card,
+                        grid=self._mgrs,
+                        policy=self._policy(),
+                    )
+                )
             elif isinstance(item, dict):
-                message = message_from_event(item, source_id="batch")
-            else:
-                message = None
-            if message is None:
-                continue
-            self.add_messages([message])
-            accepted += 1
-        return {"accepted": accepted}
+                found.extend(self._messages_from_payload(item, batch_source))
+        if found:
+            self.add_messages(found)
+        return {"accepted": len(found)}
+
+    def save_coord_card(self, filename: str, body: bytes) -> dict[str, int]:
+        """Validate, then replace the card. A bad card leaves the previous one."""
+
+        if len(body) > self.settings.max_upload_bytes:
+            raise ValueError("coord card exceeds the upload limit")
+        name = filename.strip() or "coord-card.yaml"
+        if "/" in name or "\\" in name or name.startswith("."):
+            raise ValueError("coord card filename must be a single file name")
+        if not name.lower().endswith((".yaml", ".yml", ".csv")):
+            raise ValueError("coord card must be YAML or CSV")
+        text = body.decode("utf-8")
+        card = parse_coord_card_text(
+            text,
+            suffix=name,
+            mismatch_meters=self.settings.coord_mismatch_meters,
+        )
+        target = self._coord_card_target(name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.parent / f".{target.name}.upload"
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(target)
+        self._coord_card = card
+        self._coord_card_file = target
+        return {"types": len(card.types)}
 
     def correlations_document(self) -> dict[str, object]:
         return {
@@ -475,8 +524,14 @@ class AnalyticsService:
                     "source_ids": list(item.source_ids),
                     "site_types": sorted(item.site_types),
                     "activity_id": item.activity.activity_id,
+                    "tacrep_type": labels[0],
+                    "block": labels[1],
+                    "warning": labels[2],
+                    "superseded": list(labels[3]),
                 }
-                for item in self._correlations
+                for item, labels in (
+                    (item, session_labels(item.messages)) for item in self._correlations
+                )
             ]
         }
 
@@ -605,6 +660,7 @@ class AnalyticsService:
         if client is None or not self.settings.tacrep_rooms:
             return []
         found: list[Report] = []
+        pending: list[TacrepMessage] = []
         for room in self.settings.tacrep_rooms:
             messages = await client.read_room(
                 room, since=self._report_cursors.get(room)
@@ -612,6 +668,17 @@ class AnalyticsService:
             for message in messages:
                 if message.message_id:
                     self._report_cursors[room] = message.message_id
+                parsed = parse_tacrep_body(
+                    message.body,
+                    source_id=room,
+                    observed_at=message.timestamp,
+                    card=self._coord_card,
+                    grid=self._mgrs,
+                    policy=self._policy(),
+                )
+                if parsed:
+                    pending.extend(parsed)
+                    continue
                 report = parse_tacrep(
                     message.body,
                     layer=room,
@@ -621,13 +688,8 @@ class AnalyticsService:
                 )
                 if report is not None:
                     found.append(report)
-                parsed = parse_tacrep_line(
-                    message.body,
-                    source_id=room,
-                    fallback_message_id=message.message_id,
-                )
-                if parsed is not None:
-                    self.add_messages([parsed])
+        if pending:
+            self.add_messages(pending)
         return found
 
     async def publish_if_configured(self) -> None:
@@ -696,17 +758,98 @@ class AnalyticsService:
         self.hub.broadcast(update)
         return update
 
+    def _refresh_correlations(self) -> None:
+        self._correlations = correlate(
+            self._messages,
+            self._policy(),
+            neighbors=self._neighbor_cells,
+        )
+        live = {item.activity.activity_id for item in self._correlations}
+        self._activity_overrides = {
+            key: value for key, value in self._activity_overrides.items() if key in live
+        }
+
+    def _policy(self) -> CorrelationPolicy:
+        blocks = tuple(
+            TacrepBlock(
+                kind=item.kind,
+                start=item.start,
+                end=item.end,
+                tacrep_type=item.name,
+            )
+            for item in self._coord_card.types
+        )
+        return replace(self.settings.correlation, blocks=blocks)
+
+    def _neighbor_cells(self, cell_id: str, k: int) -> set[str]:
+        return set(self._index.disk(cell_id, k))
+
+    def _messages_from_payload(
+        self,
+        payload: Mapping[str, object],
+        source_id: str,
+    ) -> list[TacrepMessage]:
+        source = str(payload.get("source_id") or source_id)
+        wrapped = payload.get("tacrep", payload.get("message", payload.get("body")))
+        if isinstance(wrapped, str) and "//" in wrapped:
+            return list(
+                parse_tacrep_body(
+                    wrapped,
+                    source_id=source,
+                    card=self._coord_card,
+                    grid=self._mgrs,
+                    policy=self._policy(),
+                )
+            )
+        message = message_from_event(payload, source_id=source, policy=self._policy())
+        if message is None:
+            return []
+        return [message]
+
+    def _coord_card_target(self, filename: str) -> Path:
+        configured = self.settings.coord_card_path.strip()
+        if configured:
+            return Path(configured)
+        directory = Path(self.settings.reference_dir.strip() or "reference")
+        return directory / filename
+
+    def _load_coord_card_file(self) -> None:
+        path = self._coord_card_file
+        if path is None or not path.is_file():
+            return
+        try:
+            self._coord_card = parse_coord_card_text(
+                path.read_text(encoding="utf-8"),
+                suffix=path.suffix,
+                mismatch_meters=self.settings.coord_mismatch_meters,
+            )
+        except ValueError:
+            logger.exception("Coord card at %s was not loaded", path)
+
+    def auth_policy(self) -> AuthPolicy:
+        origins = self.settings.ws_origins
+        return AuthPolicy(
+            read_token=self.settings.read_token,
+            write_token=self.settings.write_token,
+            origins=origins,
+        )
+
     async def run_analysis_loop(self) -> None:
         while True:
-            async with self._lock:
-                self.analyze()
-                await self.publish_if_configured()
-                message = self.publish_output()
-                if message is not None and self.frontend is not None:
-                    try:
-                        await self.frontend.publish(message)
-                    except Exception:
-                        logger.exception("Frontend publication failed")
+            try:
+                async with self._lock:
+                    await asyncio.to_thread(self.analyze)
+                    await self.publish_if_configured()
+                    message = self.publish_output()
+                    if message is not None and self.frontend is not None:
+                        try:
+                            await self.frontend.publish(message)
+                        except Exception:
+                            logger.exception("Frontend publication failed")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Analysis failed")
             await asyncio.sleep(self.settings.analysis_interval_seconds)
 
 
@@ -773,6 +916,31 @@ def _activity_document(activity: Activity) -> dict[str, object]:
         "site_type": state_site_type(activity.state),
         "source_ids": list(activity.source_ids),
     }
+
+
+def _coord_card_file(path: str) -> Path | None:
+    text = path.strip()
+    if not text:
+        return None
+    return Path(text)
+
+
+def _retain_fixes(fixes: list[GpsFix], seconds: float) -> list[GpsFix]:
+    """Drop fixes older than ``seconds`` before each vehicle's newest fix."""
+
+    if seconds <= 0 or not fixes:
+        return fixes
+    newest: dict[str, datetime] = {}
+    for fix in fixes:
+        current = newest.get(fix.vehicle_id)
+        if current is None or fix.timestamp > current:
+            newest[fix.vehicle_id] = fix.timestamp
+    kept: list[GpsFix] = []
+    for fix in fixes:
+        cutoff = newest[fix.vehicle_id] - timedelta(seconds=seconds)
+        if fix.timestamp >= cutoff:
+            kept.append(fix)
+    return kept
 
 
 def _json_object(body: str) -> dict[str, object] | None:

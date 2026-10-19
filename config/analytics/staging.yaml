@@ -1,6 +1,6 @@
 # Staging does not read Navixy. Clairvoyant is on, websocket first.
 analytics:
-  http_host: "0.0.0.0"
+  http_host: "127.0.0.1"
   http_port: 8080
   reference_dir: "/data/reference"
   publish_events: true
@@ -25,7 +25,7 @@ analytics:
     minimum_sources: 3
     minimum_transload_speed_mps: 0.5
   map:
-    provider: leaflet
+    provider: none
     tile_url: ""
     attribution: ""
     min_zoom: 0
@@ -34,8 +34,7 @@ analytics:
     center_longitude: -98.5795
     zoom: 4
   routing:
-    engine: osrm
-    osrm_base_url: "https://router.project-osrm.org"
+    engine: msr
     timeout_seconds: 15
     cache_ttl_seconds: 300
     cache_size: 256

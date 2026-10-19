@@ -76,7 +76,10 @@ def encode_server_frame(opcode: int, payload: bytes) -> bytes:
     return bytes(header) + payload
 
 
-async def read_client_frame(reader: asyncio.StreamReader) -> str | bytes:
+async def read_client_frame(
+    reader: asyncio.StreamReader,
+    max_bytes: int = 1_048_576,
+) -> str | bytes:
     """Return ``close``, ``ignore``, or a pong frame to write back."""
 
     try:
@@ -86,6 +89,8 @@ async def read_client_frame(reader: asyncio.StreamReader) -> str | bytes:
             length = int.from_bytes(await reader.readexactly(2), "big")
         elif length == 127:
             length = int.from_bytes(await reader.readexactly(8), "big")
+        if length > max_bytes:
+            return "close"
         mask = await reader.readexactly(4) if head[1] & 0x80 else b""
         payload = await reader.readexactly(length) if length else b""
     except asyncio.IncompleteReadError:

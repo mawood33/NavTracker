@@ -1,3 +1,5 @@
+import httpx
+
 from analytics.domain.outputs import basemap_document, diff_documents, landing_page
 from analytics.domain.reference import Msr
 from analytics.domain.routing import (
@@ -88,6 +90,27 @@ def test_failed_engine_falls_back_to_the_msr_network():
     )
     leg = facade.route((0.0, 0.0), (0.0, 0.01), _profile(), [route])
     assert leg.engine == "msr"
+
+
+def test_transport_errors_fall_back_to_the_msr_network():
+    class _Down:
+        def __init__(self, error: Exception):
+            self.error = error
+
+        def route(self, origin, destination, profile):
+            raise self.error
+
+    route = Msr(name="MSR RED", points=((0.0, 0.0), (0.0, 0.01)))
+    for error in (TimeoutError("timed out"), httpx.ConnectError("refused")):
+        facade = RoutingFacade(
+            "osrm",
+            _Down(error),
+            RouteCache(8, 300, now=lambda: 0),
+            500,
+            40,
+        )
+        leg = facade.route((0.0, 0.0), (0.0, 0.01), _profile(), [route])
+        assert leg.engine == "msr"
 
 
 def test_valhalla_and_graphhopper_parse_fake_payloads():

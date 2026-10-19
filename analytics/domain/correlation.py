@@ -1,35 +1,41 @@
-"""TACREP messages, activity states, and pair-match correlation.
+"""TACREP messages, activity sessions, and pair-match correlation.
 
-``https://github.com/mawood33/TransloadOracle`` still returned 404 from
-this environment, including branch ``feat/python-services`` at
-``3f473a8``. The rules in this module follow the owner's extracted
-description of ``apps/processing`` and are the stand-in until that tree
-can be read directly.
-
-A TACREP line is ``KIND-seq//time//lat,lon//key=value...``. Kinds are
+A TACREP line is ``KIND-seq//time//lat,lon//key=value``. Kinds are
 ``O`` (launch), ``I`` (imagery), ``J`` (movement), ``E`` (electronic),
 and ``UNKNOWN``. Times are ISO-8601 UTC.
 
-Activities move ``pre_launch_hide -> launch -> hide_after_launch ->
-transload -> hide_after_transload``. ``closed`` is not used. An ``O``
-message enters ``launch``. A gap longer than ``hide_gap_minutes`` moves
-``launch`` to ``hide_after_launch`` and ``transload`` to
-``hide_after_transload``. A ``J``, ``I``, or ``E`` message enters
-``transload`` only from ``hide_after_launch`` when it shares a BMOA.
-Accepted evidence is 1.0 and rejected evidence is 0.0.
+Serial ids match ``^[A-Z]-\\d{3}[A-Z]?$``. ``I-103A`` corrects ``I-103``.
+The base id is the identity, scoped by source and UTC day. The highest
+suffix wins, and an older suffix does not replace it. Ids that do not
+match the pattern use a hash of the source and the raw line.
 
-Pair score is ``0.45 * same_subject + 0.35 * spatial + 0.20 * time``.
-Spatial is 1.0 in the same H3 cell, 0.8 for a shared BMOA, and 0.6 for
-a shared MSR. Time is ``1 - gap / window``. A group is ``probable`` when
-it has at least three source ids and a best score of at least 0.70.
+Exercise block ranges come from a coord card, not from hardcoded
+numbers. The card's type name, kind letter, and range classify the id.
+``O``, ``J``, and ``E`` still use their TransloadOracle type names when
+the card does not list that letter. A serial outside its block, or a
+kind letter that contradicts the declared kind, is accepted and flagged.
+
+Activities move ``pre_launch_hide -> launch -> hide_after_launch ->
+transload -> hide_after_transload``. ``closed`` is unused. An ``O``
+message enters ``launch``. A gap longer than ``hide_gap_minutes`` moves
+to the next hide state. A ``J``, ``I``, or ``E`` message enters
+``transload`` from ``hide_after_launch`` when it shares a BMOA.
+
+Sessions group messages whose span from the first message stays inside
+the correlation window and whose cells are the anchor cell or an H3
+neighbor. Pair score is ``0.45 * same_subject + 0.35 * spatial +
+0.20 * time``. The subject term counts only an explicit subject.
 ``minimum_transload_speed_mps`` is stored and is not used.
 """
 
-from collections.abc import Mapping, Sequence
+import hashlib
+import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from analytics.domain.reference import Evidence
+from analytics.domain.timeutil import ensure_utc, valid_position
 
 ACTIVITY_STATES = (
     "pre_launch_hide",
@@ -41,6 +47,35 @@ ACTIVITY_STATES = (
 _KINDS = frozenset({"O", "I", "J", "E", "UNKNOWN"})
 _TRANSLOAD_KINDS = frozenset({"J", "I", "E"})
 _NEXT_HIDE = {"launch": "hide_after_launch", "transload": "hide_after_transload"}
+_SERIAL_RE = re.compile(r"^([A-Z])-(\d{3})([A-Z]?)$")
+_KIND_TYPES = {
+    "O": "launch",
+    "I": "imagery",
+    "J": "movement",
+    "E": "electronic",
+}
+_EVENT_KINDS = {
+    "slowing": "slowdown",
+    "slowdown": "slowdown",
+    "stopping": "stop",
+    "stop": "stop",
+    "milling": "mill",
+    "mill": "mill",
+}
+NeighborLookup = Callable[[str, int], set[str]]
+
+
+@dataclass(frozen=True)
+class TacrepBlock:
+    """One configured serial range for a kind letter."""
+
+    kind: str
+    start: int
+    end: int
+    tacrep_type: str
+
+
+DEFAULT_BLOCKS: tuple[TacrepBlock, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,6 +90,8 @@ class CorrelationPolicy:
     subject_weight: float = 0.45
     spatial_weight: float = 0.35
     time_weight: float = 0.20
+    neighbor_k: int = 1
+    blocks: tuple[TacrepBlock, ...] = DEFAULT_BLOCKS
 
 
 @dataclass(frozen=True)
@@ -78,6 +115,17 @@ class TacrepMessage:
     msr: str = ""
     cell_id: str = ""
     raw: str = ""
+    serial_base: str = ""
+    serial_full: str = ""
+    correction_rank: int = -1
+    tacrep_type: str = ""
+    block_label: str = ""
+    block_warning: str = ""
+    event: str = ""
+    callsign: str = ""
+    mgrs_text: str = ""
+    attributes: tuple[tuple[str, str], ...] = ()
+    history: tuple["TacrepMessage", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,7 +147,7 @@ class Activity:
 
 @dataclass(frozen=True)
 class Correlation:
-    """Messages that share an H3 cell and a 45-minute window."""
+    """Messages that share a session inside the correlation window."""
 
     cell_id: str
     window_start: datetime
@@ -126,9 +174,11 @@ def parse_tacrep_line(
     *,
     source_id: str,
     fallback_message_id: str = "",
+    policy: CorrelationPolicy | None = None,
 ) -> TacrepMessage | None:
     """Parse one ``KIND-seq//time//lat,lon//key=value`` line."""
 
+    del fallback_message_id
     body = text.strip()
     if "//" not in body:
         return None
@@ -137,6 +187,7 @@ def parse_tacrep_line(
         return None
     kind, sequence = parts[0].split("-", 1)
     kind = kind.strip().upper()
+    sequence = sequence.strip()
     if kind not in _KINDS:
         return None
     observed = _parse_time(parts[1])
@@ -148,18 +199,20 @@ def parse_tacrep_line(
         longitude = float(lat_lon[1].strip())
     except ValueError:
         return None
+    if not valid_position(latitude, longitude):
+        return None
     fields = _fields(parts[3:])
-    subject = fields.get("subject") or fields.get("id") or ""
-    message_id = fields.get("id") or fallback_message_id or sequence.strip()
+    rules = policy or CorrelationPolicy()
+    identity = _identity(kind, sequence, fields.get("id", ""), source_id, body, rules)
     return TacrepMessage(
         kind=kind,
-        sequence=sequence.strip(),
+        sequence=sequence,
         observed_at=observed,
         latitude=latitude,
         longitude=longitude,
         source_id=source_id,
-        source_message_id=message_id,
-        subject=subject,
+        source_message_id=identity[0],
+        subject=fields.get("subject", ""),
         speed_mps=_optional_float(fields.get("speed")),
         heading=_optional_float(fields.get("heading")),
         length_m=_optional_float(fields.get("length")),
@@ -168,6 +221,12 @@ def parse_tacrep_line(
         bmoa=fields.get("bmoa", ""),
         msr=fields.get("msr", ""),
         raw=body,
+        serial_base=identity[1],
+        serial_full=identity[2],
+        correction_rank=identity[3],
+        tacrep_type=identity[4],
+        block_label=identity[5],
+        block_warning=identity[6],
     )
 
 
@@ -176,17 +235,18 @@ def message_from_event(
     *,
     source_id: str,
     fallback_message_id: str = "",
+    policy: CorrelationPolicy | None = None,
 ) -> TacrepMessage | None:
     """Accept a JSON event or a JSON object that wraps a TACREP line."""
 
     wrapped = payload.get("tacrep", payload.get("message", payload.get("body")))
     if isinstance(wrapped, str) and "//" in wrapped:
         source = str(payload.get("source_id", source_id) or source_id)
-        message_id = str(payload.get("source_message_id", fallback_message_id) or "")
         return parse_tacrep_line(
             wrapped,
             source_id=source,
-            fallback_message_id=message_id,
+            fallback_message_id=fallback_message_id,
+            policy=policy,
         )
     kind = str(payload.get("kind", payload.get("type", "")) or "").strip().upper()
     if kind not in _KINDS:
@@ -194,21 +254,28 @@ def message_from_event(
     observed = _parse_time(str(payload.get("time", payload.get("timestamp", "")) or ""))
     latitude = _optional_float(payload.get("latitude", payload.get("lat")))
     longitude = _optional_float(payload.get("longitude", payload.get("lon")))
-    if observed is None or latitude is None or longitude is None:
+    if (
+        observed is None
+        or latitude is None
+        or longitude is None
+        or not valid_position(latitude, longitude)
+    ):
         return None
-    message_id = str(
-        payload.get("source_message_id", payload.get("id", fallback_message_id)) or ""
-    )
-    subject = str(payload.get("subject", payload.get("id", "")) or "")
+    rules = policy or CorrelationPolicy()
+    sequence = str(payload.get("sequence", "") or "")
+    explicit_id = str(payload.get("source_message_id", payload.get("id", "")) or "")
+    raw = str(payload.get("raw", "") or "")
+    identity = _identity(kind, sequence, explicit_id, source_id, raw or explicit_id, rules)
+    subject = payload.get("subject", "")
     return TacrepMessage(
         kind=kind,
-        sequence=str(payload.get("sequence", "") or ""),
+        sequence=sequence,
         observed_at=observed,
         latitude=latitude,
         longitude=longitude,
         source_id=str(payload.get("source_id", source_id) or source_id),
-        source_message_id=message_id,
-        subject=subject,
+        source_message_id=identity[0],
+        subject=subject.strip() if isinstance(subject, str) else "",
         speed_mps=_optional_float(payload.get("speed")),
         heading=_optional_float(payload.get("heading")),
         length_m=_optional_float(payload.get("length")),
@@ -216,16 +283,30 @@ def message_from_event(
         reported_confidence=_optional_float(payload.get("confidence")),
         bmoa=str(payload.get("bmoa", "") or ""),
         msr=str(payload.get("msr", "") or ""),
+        raw=raw,
+        serial_base=identity[1],
+        serial_full=identity[2],
+        correction_rank=identity[3],
+        tacrep_type=identity[4],
+        block_label=identity[5],
+        block_warning=identity[6],
     )
 
 
 def dedupe_messages(messages: Sequence[TacrepMessage]) -> tuple[TacrepMessage, ...]:
-    """Keep the first copy of each source id and source message id."""
+    """Collapse exact copies and let the newest correction replace older ones."""
 
-    found: dict[tuple[str, str], TacrepMessage] = {}
+    winners: dict[tuple[str, str, str], TacrepMessage] = {}
+    order: list[tuple[str, str, str]] = []
     for message in messages:
-        found.setdefault((message.source_id, message.source_message_id), message)
-    return tuple(found.values())
+        key = _identity_key(message)
+        current = winners.get(key)
+        if current is None:
+            winners[key] = message
+            order.append(key)
+            continue
+        winners[key] = _prefer(current, message)
+    return tuple(winners[key] for key in order)
 
 
 def pair_score(
@@ -254,45 +335,58 @@ def pair_score(
 def correlate(
     messages: Sequence[TacrepMessage],
     policy: CorrelationPolicy | None = None,
+    *,
+    neighbors: NeighborLookup | None = None,
 ) -> tuple[Correlation, ...]:
-    """Group by H3 cell and window, then label each group."""
+    """Sessionize by gap from the first message, including H3 neighbors."""
 
     rules = policy or CorrelationPolicy()
-    grouped: dict[tuple[str, datetime], list[TacrepMessage]] = {}
-    for message in messages:
-        if not message.cell_id:
-            continue
-        key = (message.cell_id, window_start(message.observed_at, rules.window_minutes))
-        grouped.setdefault(key, []).append(message)
+    ordered = tuple(
+        sorted(
+            (message for message in messages if message.cell_id),
+            key=lambda item: item.observed_at,
+        )
+    )
+    sessions: list[list[TacrepMessage]] = []
+    for message in ordered:
+        placed = False
+        for session in reversed(sessions):
+            if _joins(session, message, rules, neighbors):
+                session.append(message)
+                placed = True
+                break
+        if not placed:
+            sessions.append([message])
     results: list[Correlation] = []
-    for (cell_id, start), bucket in sorted(grouped.items()):
-        ordered = tuple(sorted(bucket, key=lambda item: item.observed_at))
+    for session in sessions:
+        bucket = tuple(session)
         best = 0.0
-        for index, left in enumerate(ordered):
-            for right in ordered[index + 1 :]:
-                best = max(best, pair_score(left, right, rules, same_cell=True))
-        sources = tuple(dict.fromkeys(item.source_id for item in ordered if item.source_id))
+        for index, left in enumerate(bucket):
+            for right in bucket[index + 1 :]:
+                same = left.cell_id == right.cell_id
+                best = max(best, pair_score(left, right, rules, same_cell=same))
+        sources = tuple(dict.fromkeys(item.source_id for item in bucket if item.source_id))
         label = "possible"
         if len(sources) >= rules.minimum_sources and best >= rules.minimum_correlation_score:
             label = "probable"
-        bmoa = next((item.bmoa for item in ordered if item.bmoa), "")
+        anchor = bucket[0]
+        bmoa = next((item.bmoa for item in bucket if item.bmoa), "")
         activity = replay_activity(
-            ordered,
-            cell_id=cell_id,
+            bucket,
+            cell_id=anchor.cell_id,
             bmoa=bmoa,
             hide_gap_minutes=rules.hide_gap_minutes,
-            window_minutes=rules.window_minutes,
         )
         results.append(
             Correlation(
-                cell_id=cell_id,
-                window_start=start,
+                cell_id=anchor.cell_id,
+                window_start=anchor.observed_at,
                 label=label,
                 best_score=best,
                 source_ids=sources,
                 site_types=frozenset({state_site_type(activity.state)}),
                 activity=activity,
-                messages=ordered,
+                messages=bucket,
             )
         )
     return tuple(results)
@@ -308,10 +402,11 @@ def replay_activity(
 ) -> Activity:
     """Replay messages in time order onto a new activity."""
 
+    del window_minutes
     ordered = tuple(sorted(messages, key=lambda item: item.observed_at))
     first = ordered[0]
     activity = Activity(
-        activity_id=f"{cell_id}:{window_start(first.observed_at, window_minutes).isoformat()}",
+        activity_id=f"{cell_id}:{first.observed_at.isoformat()}",
         state="pre_launch_hide",
         cell_id=cell_id,
         bmoa=bmoa or first.bmoa,
@@ -390,16 +485,25 @@ def correlation_evidence(correlation: Correlation) -> tuple[Evidence, ...]:
 
     accepted = correlation.activity.acceptance >= 1.0
     site_type = state_site_type(correlation.activity.state) if accepted else ""
-    return (
+    tacrep_type, block, warning, superseded = session_labels(correlation.messages)
+    detail = f"state {correlation.activity.state}"
+    if warning:
+        detail = f"{detail}; {warning}"
+    if superseded:
+        detail = f"{detail}; supersedes {', '.join(superseded)}"
+    rows = [
         Evidence(
             kind="activity",
             weight=1.0 if accepted else 0.0,
-            detail=f"state {correlation.activity.state}",
+            detail=detail,
             site_type=site_type,
             observed_at=correlation.activity.updated_at,
             source="tacrep",
             layer=correlation.cell_id,
             message_id=correlation.activity.activity_id,
+            tacrep_type=tacrep_type,
+            block=block,
+            warning=warning,
         ),
         Evidence(
             kind="correlation",
@@ -412,17 +516,195 @@ def correlation_evidence(correlation: Correlation) -> tuple[Evidence, ...]:
             source="correlation",
             layer=correlation.cell_id,
             message_id=correlation.activity.activity_id,
+            tacrep_type=tacrep_type,
+            block=block,
+            warning=warning,
         ),
-    )
+    ]
+    for message in correlation.messages:
+        evidence_kind = _EVENT_KINDS.get(message.event.strip().lower())
+        if evidence_kind is None:
+            continue
+        rows.append(
+            Evidence(
+                kind=evidence_kind,
+                weight=1.0,
+                detail=f"event {message.event}",
+                observed_at=message.observed_at,
+                source=message.source_id or "tacrep",
+                layer=message.cell_id,
+                message_id=message.source_message_id,
+                tacrep_type=message.tacrep_type,
+                block=message.block_label,
+                warning=message.block_warning,
+            )
+        )
+    return tuple(rows)
 
 
 def window_start(when: datetime, window_minutes: float) -> datetime:
-    moment = when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+    moment = ensure_utc(when)
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
     size = window_minutes * 60
     elapsed = (moment - epoch).total_seconds()
     bucket = (elapsed // size) * size
     return epoch + timedelta(seconds=bucket)
+
+
+def classify_serial(
+    kind_letter: str,
+    serial: int,
+    declared_kind: str,
+    blocks: Sequence[TacrepBlock],
+) -> tuple[str, str, str]:
+    """Return TACREP type, block label, and a warning. Never drops the id."""
+
+    warnings: list[str] = []
+    letter = kind_letter.upper()
+    if declared_kind and declared_kind not in {letter, "UNKNOWN"}:
+        warnings.append(f"id kind {letter} contradicts declared kind {declared_kind}")
+    configured = [block for block in blocks if block.kind.upper() == letter]
+    matching = [block for block in configured if block.start <= serial <= block.end]
+    if matching:
+        block = matching[0]
+        label = _block_label(block)
+        return block.tacrep_type, label, "; ".join(warnings)
+    tacrep_type = _KIND_TYPES.get(letter, "")
+    if configured:
+        label = ", ".join(_block_label(block) for block in configured)
+        warnings.append(f"serial {letter}-{serial:03d} outside configured block {label}")
+        if not tacrep_type:
+            tacrep_type = configured[0].tacrep_type
+        return tacrep_type, label, "; ".join(warnings)
+    return tacrep_type, "", "; ".join(warnings)
+
+
+def _joins(
+    session: Sequence[TacrepMessage],
+    message: TacrepMessage,
+    policy: CorrelationPolicy,
+    neighbors: NeighborLookup | None,
+) -> bool:
+    anchor = session[0]
+    span = (message.observed_at - anchor.observed_at).total_seconds() / 60
+    if span < 0 or span > policy.window_minutes:
+        return False
+    return _near_cell(anchor.cell_id, message.cell_id, policy.neighbor_k, neighbors)
+
+
+def _near_cell(
+    anchor: str,
+    cell_id: str,
+    neighbor_k: int,
+    neighbors: NeighborLookup | None,
+) -> bool:
+    if cell_id == anchor:
+        return True
+    if neighbor_k <= 0 or neighbors is None:
+        return False
+    return cell_id in neighbors(anchor, neighbor_k)
+
+
+def _identity(
+    kind: str,
+    sequence: str,
+    explicit_id: str,
+    source_id: str,
+    raw: str,
+    policy: CorrelationPolicy,
+) -> tuple[str, str, str, int, str, str, str]:
+    """Return message id, base, full, rank, type, block, warning."""
+
+    declared = kind
+    explicit = parse_serial(explicit_id)
+    prefix = parse_serial(f"{kind}-{sequence}") if kind != "UNKNOWN" else None
+    if explicit is not None:
+        chosen_serial = explicit
+    elif prefix is not None:
+        chosen_serial = prefix
+    else:
+        digest = hashlib.sha256(f"{source_id}\n{raw}".encode()).hexdigest()
+        return digest[:32], "", "", -1, "", "", ""
+    tacrep_type, block, warning = classify_serial(
+        chosen_serial.kind,
+        chosen_serial.serial,
+        declared,
+        policy.blocks,
+    )
+    return (
+        chosen_serial.full_id,
+        chosen_serial.base_id,
+        chosen_serial.full_id,
+        chosen_serial.rank,
+        tacrep_type,
+        block,
+        warning,
+    )
+
+
+def parse_serial(token: str) -> "SerialId | None":
+    """Parse ``I-103`` or ``I-103A``. The suffix is a correction, not a new id."""
+
+    match = _SERIAL_RE.fullmatch(token.strip().upper())
+    if match is None:
+        return None
+    letter, digits, suffix = match.groups()
+    serial = int(digits)
+    rank = 0 if not suffix else ord(suffix) - ord("A") + 1
+    return SerialId(
+        kind=letter,
+        serial=serial,
+        suffix=suffix,
+        base_id=f"{letter}-{digits}",
+        full_id=f"{letter}-{digits}{suffix}",
+        rank=rank,
+    )
+
+
+@dataclass(frozen=True)
+class SerialId:
+    kind: str
+    serial: int
+    suffix: str
+    base_id: str
+    full_id: str
+    rank: int
+
+
+def _identity_key(message: TacrepMessage) -> tuple[str, str, str]:
+    if message.serial_base:
+        day = ensure_utc(message.observed_at).date().isoformat()
+        return message.source_id, message.serial_base, day
+    return message.source_id, message.source_message_id, ""
+
+
+def _prefer(current: TacrepMessage, incoming: TacrepMessage) -> TacrepMessage:
+    if incoming.correction_rank < 0 or incoming.serial_full == current.serial_full:
+        return current
+    if incoming.correction_rank > current.correction_rank:
+        prior = replace(current, history=())
+        return replace(incoming, history=current.history + (prior,))
+    prior = replace(incoming, history=())
+    return replace(current, history=current.history + (prior,))
+
+
+def session_labels(
+    messages: Sequence[TacrepMessage],
+) -> tuple[str, str, str, tuple[str, ...]]:
+    types = list(dict.fromkeys(item.tacrep_type for item in messages if item.tacrep_type))
+    blocks = list(dict.fromkeys(item.block_label for item in messages if item.block_label))
+    warnings = list(dict.fromkeys(item.block_warning for item in messages if item.block_warning))
+    superseded: list[str] = []
+    for item in messages:
+        for prior in item.history:
+            label = prior.serial_full or prior.source_message_id
+            if label and label not in superseded:
+                superseded.append(label)
+    return ",".join(types), ",".join(blocks), "; ".join(warnings), tuple(superseded)
+
+
+def _block_label(block: TacrepBlock) -> str:
+    return f"{block.kind.upper()}-{block.start}..{block.kind.upper()}-{block.end}"
 
 
 def _spatial(left: TacrepMessage, right: TacrepMessage, same_cell: bool | None) -> float:
@@ -448,6 +730,12 @@ def _fields(parts: Sequence[str]) -> dict[str, str]:
     return found
 
 
+def parse_time(text: str) -> datetime | None:
+    """Parse an ISO-8601 timestamp. Naive values are UTC."""
+
+    return _parse_time(text)
+
+
 def _parse_time(text: str) -> datetime | None:
     token = text.strip()
     if not token:
@@ -458,9 +746,7 @@ def _parse_time(text: str) -> datetime | None:
         parsed = datetime.fromisoformat(token)
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
+    return ensure_utc(parsed)
 
 
 def _optional_float(value: object) -> float | None:

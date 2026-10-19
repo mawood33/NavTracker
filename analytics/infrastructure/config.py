@@ -92,6 +92,18 @@ class AnalyticsSettings:
     map_center_longitude: float = -98.5795
     map_zoom: int = 4
     map_mapbox_token: str = ""
+    read_token: str = ""
+    write_token: str = ""
+    ws_origins: tuple[str, ...] = ()
+    max_body_bytes: int = 1_048_576
+    max_upload_bytes: int = 8_388_608
+    max_ws_bytes: int = 1_048_576
+    max_archive_entries: int = 64
+    max_archive_bytes: int = 33_554_432
+    max_ws_queue: int = 8
+    fix_retention_seconds: float = 86_400
+    coord_card_path: str = ""
+    coord_mismatch_meters: float = 250.0
 
 
 def load_analytics_settings(
@@ -161,7 +173,7 @@ def load_analytics_settings(
         environment=environment,
         http_host=env_setting(
             "ANALYTICS_HTTP_HOST",
-            str(analytics.get("http_host", "0.0.0.0")),
+            str(analytics.get("http_host", "127.0.0.1")),
         ),
         http_port=int_setting(
             "ANALYTICS_HTTP_PORT",
@@ -409,6 +421,59 @@ def load_analytics_settings(
             )
         ),
         map_mapbox_token=_mapbox_token(_map_block(analytics)),
+        read_token=env_setting("ANALYTICS_READ_TOKEN", str(analytics.get("read_token", ""))),
+        write_token=env_setting("ANALYTICS_WRITE_TOKEN", str(analytics.get("write_token", ""))),
+        ws_origins=_ws_origins(analytics),
+        max_body_bytes=_byte_setting(
+            "ANALYTICS_MAX_BODY_BYTES",
+            analytics.get("max_body_bytes"),
+            1_048_576,
+        ),
+        max_upload_bytes=_byte_setting(
+            "ANALYTICS_MAX_UPLOAD_BYTES",
+            analytics.get("max_upload_bytes"),
+            8_388_608,
+        ),
+        max_ws_bytes=_byte_setting(
+            "ANALYTICS_MAX_WS_BYTES",
+            analytics.get("max_ws_bytes"),
+            1_048_576,
+        ),
+        max_archive_entries=int(
+            _byte_setting(
+                "ANALYTICS_MAX_ARCHIVE_ENTRIES",
+                analytics.get("max_archive_entries"),
+                64,
+            )
+        ),
+        max_archive_bytes=_byte_setting(
+            "ANALYTICS_MAX_ARCHIVE_BYTES",
+            analytics.get("max_archive_bytes"),
+            33_554_432,
+        ),
+        max_ws_queue=int(
+            _byte_setting("ANALYTICS_MAX_WS_QUEUE", analytics.get("max_ws_queue"), 8)
+        ),
+        fix_retention_seconds=_non_negative(
+            "ANALYTICS_FIX_RETENTION_SECONDS",
+            pick_setting(
+                "ANALYTICS_FIX_RETENTION_SECONDS",
+                analytics.get("fix_retention_seconds"),
+                86_400,
+            ),
+        ),
+        coord_card_path=env_setting(
+            "ANALYTICS_COORD_CARD",
+            str(analytics.get("coord_card", "")),
+        ).strip(),
+        coord_mismatch_meters=_non_negative(
+            "ANALYTICS_COORD_MISMATCH_METERS",
+            pick_setting(
+                "ANALYTICS_COORD_MISMATCH_METERS",
+                analytics.get("coord_mismatch_meters"),
+                250,
+            ),
+        ),
     )
     if settings.frontend_enabled and not settings.frontend_ingest_url:
         raise RuntimeError(
@@ -676,6 +741,25 @@ def _string_list(env_name: str, yaml_value: object) -> tuple[str, ...]:
     if isinstance(raw, list):
         return tuple(str(item).strip() for item in raw if str(item).strip())
     return tuple(part.strip() for part in str(raw).split(",") if part.strip())
+
+
+def _ws_origins(analytics: dict[str, object]) -> tuple[str, ...]:
+    raw = os.getenv("ANALYTICS_WS_ORIGINS", "").strip()
+    if raw:
+        return tuple(part.strip() for part in raw.split(",") if part.strip())
+    configured = analytics.get("ws_origins", ())
+    if isinstance(configured, str):
+        return tuple(part.strip() for part in configured.split(",") if part.strip())
+    if isinstance(configured, list):
+        return tuple(str(part).strip() for part in configured if str(part).strip())
+    return ()
+
+
+def _byte_setting(name: str, configured: object, default: int) -> int:
+    number = _positive(name, pick_setting(name, configured, default))
+    if number != int(number):
+        raise RuntimeError(f"Invalid {name}={configured!r}. Expected an integer.")
+    return int(number)
 
 
 def _map_block(analytics: dict[str, object]) -> dict[str, object]:

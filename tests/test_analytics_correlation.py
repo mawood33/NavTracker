@@ -50,7 +50,8 @@ def test_tacrep_line_fields_and_dedupe_key():
     assert parsed.latitude == 10.5
     assert parsed.longitude == -80.25
     assert parsed.subject == "alpha"
-    assert parsed.source_message_id == "m9"
+    assert parsed.source_message_id != "m9"
+    assert len(parsed.source_message_id) == 32
     assert parsed.speed_mps == 12
     assert parsed.bmoa == "AREA"
     duplicate = TacrepMessage(
@@ -60,7 +61,7 @@ def test_tacrep_line_fields_and_dedupe_key():
         latitude=1,
         longitude=2,
         source_id="room-a",
-        source_message_id="m9",
+        source_message_id=parsed.source_message_id,
     )
     other = TacrepMessage(
         kind="J",
@@ -359,6 +360,15 @@ def test_checked_in_defaults_match_transload_oracle():
     assert settings.correlation.hide_gap_minutes == 20
     assert settings.correlation.minimum_correlation_score == 0.70
     assert settings.correlation.minimum_sources == 3
+    assert settings.http_host == "127.0.0.1"
+    assert settings.coord_card_path == ""
+    staging = validate_analytics_environment("staging")
+    production = validate_analytics_environment("production")
+    assert staging.map_provider == "none"
+    assert staging.routing_engine == "msr"
+    assert production.map_provider == "none"
+    assert production.routing_engine == "msr"
+    assert production.http_host == "127.0.0.1"
 
 
 def test_mapbox_settings_require_a_token(monkeypatch: pytest.MonkeyPatch):

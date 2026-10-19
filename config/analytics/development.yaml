@@ -1,7 +1,7 @@
 # Backend analytics. Independent of Navixy. Development leaves Clairvoyant
 # off so the process can start with only reference files and ChatSurfer.
 analytics:
-  http_host: "0.0.0.0"
+  http_host: "127.0.0.1"
   http_port: 8080
   reference_dir: "/data/reference"
   publish_events: false

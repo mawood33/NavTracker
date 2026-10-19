@@ -42,6 +42,9 @@ class CellIndex(Protocol):
     def boundary(self, cell_id: str) -> tuple[tuple[float, float], ...]:
         """Return the ring as latitude, longitude pairs."""
 
+    def disk(self, cell_id: str, k: int) -> tuple[str, ...]:
+        """Return the cell and its neighbors out to distance ``k``."""
+
 
 @dataclass(frozen=True)
 class GridPolicy:

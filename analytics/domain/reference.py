@@ -40,6 +40,9 @@ class Evidence:
     source: str = ""
     layer: str = ""
     message_id: str = ""
+    tacrep_type: str = ""
+    block: str = ""
+    warning: str = ""
 
 
 @dataclass(frozen=True)
