@@ -67,6 +67,8 @@ class Site:
     moa: str = ""
     complex_name: str = ""
     mgrs: str = ""
+    activity_status: str = "unknown"
+    verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,14 +81,24 @@ class Msr:
 
 
 @dataclass(frozen=True)
+class Bmoa:
+    """A named area. Polygon points are (latitude, longitude)."""
+
+    name: str
+    polygon: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
 class ReferenceData:
     sites: tuple[Site, ...] = ()
     msrs: tuple[Msr, ...] = ()
+    bmoas: tuple[Bmoa, ...] = ()
 
     def merge(self, other: "ReferenceData") -> "ReferenceData":
         return ReferenceData(
             sites=self.sites + other.sites,
             msrs=self.msrs + other.msrs,
+            bmoas=self.bmoas + other.bmoas,
         )
 
 
@@ -112,6 +124,19 @@ def match_site(
             best = site
             best_distance = distance
     return best
+
+
+def match_bmoa(
+    latitude: float,
+    longitude: float,
+    areas: Sequence[Bmoa],
+) -> Bmoa | None:
+    """Return the first BMOA polygon that contains the point."""
+
+    for area in areas:
+        if len(area.polygon) >= 3 and point_in_polygon(latitude, longitude, area.polygon):
+            return area
+    return None
 
 
 def match_msr(

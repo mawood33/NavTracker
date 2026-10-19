@@ -7,6 +7,7 @@ from analytics.infrastructure.reference_parse import (
     load_reference_file,
     parse_csv_sites,
     parse_dms,
+    parse_geojson,
     parse_kml,
     parse_kmz,
 )
@@ -138,6 +139,33 @@ def _write_xlsx(path, sheet_name, rows):
         for name, body in files.items():
             archive.writestr(name, body)
     ET.fromstring(files["xl/worksheets/sheet1.xml"])
+
+
+def test_geojson_bmoa_polygon_and_kml_name_become_areas():
+    data = parse_geojson(
+        b"""
+        {"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"name":"BMOA North"},
+           "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}},
+          {"type":"Feature","properties":{"name":"MSR RED"},
+           "geometry":{"type":"LineString","coordinates":[[0,0],[1,0]]}}
+        ]}
+        """
+    )
+    assert data.bmoas[0].name == "BMOA North"
+    assert data.bmoas[0].polygon[0] == (0.0, 0.0)
+    assert data.msrs[0].name == "MSR RED"
+    assert data.sites == ()
+    kml = parse_kml(
+        b"""<?xml version="1.0"?>
+        <kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+          <Placemark><name>BMOA South</name><Polygon><outerBoundaryIs><LinearRing>
+            <coordinates>0,0,0 1,0,0 1,1,0 0,0,0</coordinates>
+          </LinearRing></outerBoundaryIs></Polygon></Placemark>
+        </Document></kml>"""
+    )
+    assert kml.bmoas[0].name == "BMOA South"
+    assert kml.sites == ()
 
 
 def _xml(text):

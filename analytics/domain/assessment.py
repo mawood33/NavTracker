@@ -11,11 +11,15 @@ and ``Evidence`` in ``analytics.domain.reference`` stay the shared
 model. ``analytics.application.service.AnalyticsService.analyze`` is
 the call site.
 
-TransloadOracle (https://github.com/mawood33/TransloadOracle) was not
-readable from this environment (the repository returns 404). This
-module is the place to replace with that project's scoring once the
-repository can be read. Do not add it as a runtime dependency; port
-the function or map its records onto ``Evidence``.
+Activity and correlation rows from ``analytics.domain.correlation``
+are evidence. An accepted transition is weight 1.0 and a rejected one
+is 0.0. Numeric confidence scales those weights by
+``accepted_evidence_scale`` so a single acceptance stays below
+``confirmed_at``. A ``probable`` correlation label raises status to
+``probable``. A ``truth`` row, including manual verification, forces
+``confirmed``. The TransloadOracle word ``verified`` is the external
+name for ``confirmed``. ``confirmed`` is also reachable from the
+thresholds. Site types stay a set. Decay stays off unless configured.
 """
 
 from collections.abc import Sequence
@@ -24,13 +28,15 @@ from datetime import datetime, timedelta
 
 from analytics.domain.aoi import AreaOfInterest
 from analytics.domain.behavior import Mill, Stop
+from analytics.domain.correlation import Correlation, correlation_evidence
 from analytics.domain.geo import haversine_meters, point_in_polygon
 from analytics.domain.grid import CellActivity, CellIndex
 from analytics.domain.reference import Evidence, Msr, Site, match_msr
 from analytics.domain.reports import Report, ReportPolicy, select_reports
 from analytics.domain.thresholds import AnalysisThresholds
 
-_DURABLE_KINDS = frozenset({"import", "declared_type", "discovered"})
+_DURABLE_KINDS = frozenset({"import", "declared_type", "discovered", "truth"})
+_SCALED_KINDS = frozenset({"activity", "correlation"})
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,7 @@ class ConfidencePolicy:
     off_msr_hide_weight: float = 0.15
     cell_score_scale: float = 0.05
     cell_cap: float = 0.2
+    accepted_evidence_scale: float = 0.2
     decay_per_day: float = 0.0
     decay_after_seconds: float = 86_400
     max_confidence: float = 1.0
@@ -80,6 +87,8 @@ class SiteActivity:
     cell_hotspot: bool
     reports: tuple[Report, ...]
     last_activity_at: datetime | None
+    pending_evidence: tuple[Evidence, ...] = ()
+    correlation_probable: bool = False
 
 
 def status_for(confidence: float, policy: ConfidencePolicy) -> str:
@@ -176,19 +185,34 @@ def assess_site(
     """
 
     fresh = _activity_evidence(activity, policy, report_policy or ReportPolicy())
-    evidence = _durable(site.evidence) + fresh
-    confidence = _clamp(sum(item.weight for item in evidence), policy)
+    evidence = _durable(site.evidence) + fresh + activity.pending_evidence
+    confidence = _clamp(_numeric_confidence(evidence, policy), policy)
     types = set(site.site_types)
     for site_type in ("hide", "launch", "transload"):
         tagged = sum(item.weight for item in evidence if item.site_type == site_type)
         if tagged >= policy.type_evidence_at:
             types.add(site_type)
+    status = status_for(confidence, policy)
+    verified = any(item.kind == "truth" for item in evidence)
+    if verified:
+        status = "confirmed"
+        confidence = _clamp(max(confidence, policy.confirmed_at), policy)
+    elif (
+        activity.correlation_probable
+        and status != "confirmed"
+        and confidence < policy.confirmed_at
+    ):
+        status = "probable"
+        if confidence < policy.probable_at:
+            confidence = policy.probable_at
     return replace(
         site,
         site_types=frozenset(types),
         confidence=confidence,
-        status=status_for(confidence, policy),
+        status=status,
         evidence=evidence,
+        activity_status=_activity_status(activity, site),
+        verified=verified,
     )
 
 
@@ -268,6 +292,7 @@ def update_sites(
     index: CellIndex | None = None,
     reports: Sequence[Report] = (),
     report_policy: ReportPolicy | None = None,
+    correlations: Sequence[Correlation] = (),
 ) -> tuple[Site, ...]:
     """Assess sites, add unmatched areas, then add unmatched hotspot cells."""
 
@@ -275,17 +300,22 @@ def update_sites(
     assessed: list[Site] = []
     names: set[str] = set()
     for site in sites:
-        activity = activity_for_site(
+        activity = _with_correlations(
+            activity_for_site(
+                site,
+                stops,
+                mills,
+                msrs,
+                as_of,
+                policy,
+                thresholds,
+                _cell_at(site, by_id, index),
+                reports,
+                report_policy,
+            ),
             site,
-            stops,
-            mills,
-            msrs,
-            as_of,
-            policy,
+            correlations,
             thresholds,
-            _cell_at(site, by_id, index),
-            reports,
-            report_policy,
         )
         updated = assess_site(site, activity, policy, report_policy)
         assessed.append(updated)
@@ -327,6 +357,48 @@ def update_sites(
             cell,
             reports,
             report_policy,
+        )
+        assessed.append(assess_site(discovered, activity, policy, report_policy))
+        names.add(discovered.name)
+    for correlation in correlations:
+        if _near_correlation(correlation, assessed, thresholds):
+            continue
+        observed = correlation.activity.updated_at
+        discovered = Site(
+            name=f"activity-{correlation.activity.activity_id.replace(':', '-')}",
+            status="possible",
+            confidence=policy.initial_confidence,
+            evidence=(
+                Evidence(
+                    kind="discovered",
+                    weight=policy.initial_confidence,
+                    detail="activity had no matching site",
+                    observed_at=observed,
+                ),
+            ),
+            origin="discovered",
+            latitude=correlation.activity.latitude,
+            longitude=correlation.activity.longitude,
+            moa=correlation.activity.bmoa,
+        )
+        if discovered.name in names:
+            continue
+        activity = _with_correlations(
+            activity_for_site(
+                discovered,
+                stops,
+                mills,
+                msrs,
+                as_of,
+                policy,
+                thresholds,
+                None,
+                reports,
+                report_policy,
+            ),
+            discovered,
+            (correlation,),
+            thresholds,
         )
         assessed.append(assess_site(discovered, activity, policy, report_policy))
         names.add(discovered.name)
@@ -636,6 +708,76 @@ def _report_evidence(
                 )
             )
     return found
+
+
+def _with_correlations(
+    activity: SiteActivity,
+    site: Site,
+    correlations: Sequence[Correlation],
+    thresholds: AnalysisThresholds,
+) -> SiteActivity:
+    related = tuple(
+        item for item in correlations if _correlation_matches(site, item, thresholds)
+    )
+    if not related:
+        return activity
+    pending = tuple(
+        evidence for item in related for evidence in correlation_evidence(item)
+    )
+    return replace(
+        activity,
+        pending_evidence=activity.pending_evidence + pending,
+        correlation_probable=any(item.label == "probable" for item in related),
+    )
+
+
+def _correlation_matches(
+    site: Site,
+    correlation: Correlation,
+    thresholds: AnalysisThresholds,
+) -> bool:
+    latitude = correlation.activity.latitude
+    longitude = correlation.activity.longitude
+    if site.polygon and point_in_polygon(latitude, longitude, site.polygon):
+        return True
+    if site.latitude is None or site.longitude is None:
+        return False
+    return (
+        haversine_meters(latitude, longitude, site.latitude, site.longitude)
+        <= thresholds.site_match_meters
+    )
+
+
+def _near_correlation(
+    correlation: Correlation,
+    sites: Sequence[Site],
+    thresholds: AnalysisThresholds,
+) -> bool:
+    return any(_correlation_matches(site, correlation, thresholds) for site in sites)
+
+
+def _numeric_confidence(evidence: Sequence[Evidence], policy: ConfidencePolicy) -> float:
+    total = 0.0
+    for item in evidence:
+        if item.kind in _SCALED_KINDS:
+            total += item.weight * policy.accepted_evidence_scale
+        else:
+            total += item.weight
+    return total
+
+
+def _activity_status(activity: SiteActivity, site: Site) -> str:
+    if (
+        activity.stops
+        or activity.dwell_seconds > 0
+        or activity.milling
+        or activity.reports
+        or activity.pending_evidence
+    ):
+        return "active"
+    if activity.last_activity_at is not None:
+        return "inactive"
+    return site.activity_status or "unknown"
 
 
 def _durable(evidence: Sequence[Evidence]) -> tuple[Evidence, ...]:

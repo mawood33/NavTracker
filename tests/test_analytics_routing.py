@@ -70,7 +70,7 @@ def test_osrm_fake_replaces_duration_and_cache_skips_the_second_call():
     assert first.cached is False
     assert second.cached is True
     assert first.engine_duration_seconds == 999
-    assert abs(first.duration_seconds - 200) < 1e-6
+    assert abs(first.duration_seconds - 1998) < 1e-6
     assert "api_key" not in str(fetch)
 
 
@@ -129,6 +129,10 @@ def test_basemap_defaults_are_air_gapped_and_osm_has_no_key():
     assert offline["tile_url"] == ""
     assert offline["air_gapped"] is True
     public = basemap_document("osm", "", "", 0, 19)
+    assert public["provider"] == "leaflet"
+    assert public["center_latitude"] == 39.8283
+    assert public["center_longitude"] == -98.5795
+    assert public["zoom"] == 4
     assert "api_key" not in str(public["tile_url"])
     assert public["tile_url"] == "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     page = landing_page(public, {"engine": "msr", "fallback": "msr"}, "")

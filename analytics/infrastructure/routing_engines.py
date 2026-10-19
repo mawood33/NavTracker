@@ -23,7 +23,13 @@ JsonFetch = Callable[[str, Mapping[str, str], Mapping[str, object] | None], obje
 
 OSRM_NOTE = (
     "OSRM was asked for the configured profile (default driving). "
-    "Height, weight, and hazmat are not sent. ETA uses the vehicle profile."
+    "Height, weight, and hazmat are not sent. "
+    "ETA is the slower of the engine time and the capped vehicle speed."
+)
+MAPBOX_NOTE = (
+    "Mapbox Directions was asked for the driving profile. "
+    "Height, weight, and hazmat are not sent. "
+    "ETA is the slower of the engine time and the capped vehicle speed."
 )
 VALHALLA_NOTE = (
     "Valhalla costing and top_speed were sent. Axle weight and height "
@@ -234,19 +240,63 @@ def build_router(
     cache: RouteCache,
     snap_meters: float,
     join_meters: float,
+    mapbox_token: str = "",
+    timeout_seconds: float = 15,
 ) -> RoutingFacade:
+    def fetch(
+        url: str,
+        params: Mapping[str, str],
+        payload: Mapping[str, object] | None,
+    ) -> object:
+        return _live_fetch(url, params, payload, timeout_seconds)
+
     primary: RoutingEngine | None
     if engine == "msr":
         primary = None
     elif engine == "osrm":
-        primary = OsrmEngine(base_url, _live_fetch)
+        primary = OsrmEngine(base_url, fetch)
     elif engine == "valhalla":
-        primary = ValhallaEngine(base_url, _live_fetch)
+        primary = ValhallaEngine(base_url, fetch)
     elif engine == "graphhopper":
-        primary = GraphHopperEngine(base_url, _live_fetch)
+        primary = GraphHopperEngine(base_url, fetch)
+    elif engine == "mapbox":
+        primary = MapboxEngine(base_url, mapbox_token, fetch)
     else:
         raise RoutingError(f"Unknown routing engine {engine}.")
     return RoutingFacade(engine, primary, cache, snap_meters, join_meters)
+
+
+class MapboxEngine:
+    """Mapbox Directions. The token is a request parameter, not a log line."""
+
+    def __init__(self, base_url: str, token: str, fetch: JsonFetch):
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.fetch = fetch
+
+    def route(
+        self,
+        origin: tuple[float, float],
+        destination: tuple[float, float],
+        profile: VehicleProfile,
+    ) -> RouteLeg:
+        if not self.token.strip():
+            raise RoutingError("Mapbox access token is required.", "mapbox_token")
+        profile_name = profile.mapbox_profile or "driving"
+        path = (
+            f"/directions/v5/mapbox/{profile_name}/"
+            f"{origin[1]},{origin[0]};{destination[1]},{destination[0]}"
+        )
+        body = self.fetch(
+            self.base_url + path,
+            {
+                "geometries": "geojson",
+                "overview": "full",
+                "access_token": self.token,
+            },
+            None,
+        )
+        return _leg_from_geojson_route(body, "mapbox", MAPBOX_NOTE, profile)
 
 
 def _leg_from_geojson_route(
@@ -323,15 +373,17 @@ def _live_fetch(
     url: str,
     params: Mapping[str, str],
     payload: Mapping[str, object] | None,
+    timeout_seconds: float = 15,
 ) -> object:
     import httpx
 
+    timeout = timeout_seconds
     if payload is not None:
-        response = httpx.post(url, json=dict(payload), timeout=15)
+        response = httpx.post(url, json=dict(payload), timeout=timeout)
     elif params:
-        response = httpx.get(url, params=dict(params), timeout=15)
+        response = httpx.get(url, params=dict(params), timeout=timeout)
     else:
-        response = httpx.get(url, timeout=15)
+        response = httpx.get(url, timeout=timeout)
     if response.status_code >= 400:
         raise RoutingError("Routing engine request failed.")
     body = response.json()

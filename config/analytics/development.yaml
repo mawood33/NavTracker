@@ -16,19 +16,30 @@ analytics:
     window_seconds: 86400
     decay_per_day: 0
   grid:
-    # H3 resolution 8 is about a 460 m hex edge. 0 disables half-life decay.
-    resolution: 8
+    # H3 resolution 9 matches TransloadOracle h3_resolution (about a 174 m edge).
+    resolution: 9
     window_seconds: 86400
     decay_half_life_seconds: 0
     hotspot_score: 1.5
+  correlation:
+    window_minutes: 45
+    hide_gap_minutes: 20
+    minimum_score: 0.70
+    minimum_sources: 3
+    minimum_transload_speed_mps: 0.5
   map:
-    provider: none
+    provider: leaflet
     tile_url: ""
     attribution: ""
     min_zoom: 0
     max_zoom: 19
+    center_latitude: 39.8283
+    center_longitude: -98.5795
+    zoom: 4
   routing:
-    engine: msr
+    engine: osrm
+    osrm_base_url: "https://router.project-osrm.org"
+    timeout_seconds: 15
     cache_ttl_seconds: 300
     cache_size: 256
     snap_meters: 500

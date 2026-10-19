@@ -1,13 +1,10 @@
 """Versioned output documents for WebSocket clients and the OGC landing page.
 
-Basemap and routing metadata are advertised here. Provider ``none`` is
-the air-gapped default: no tile host is implied. ``osm`` uses the public
-OpenStreetMap tiles and needs no API key. ``xyz`` repeats the configured
-URL unchanged, so a key belongs in the operator's environment, not in
-this repository.
-
-TransloadOracle's mapping and routing configuration was not readable
-from this environment.
+Basemap and routing metadata are advertised here. ``leaflet`` is the
+default and uses public OpenStreetMap tiles with no API key. ``mapbox``
+selects the ``dark-v11`` style; the token comes from the environment.
+``none`` is the air-gapped extra and ``xyz`` repeats an operator URL.
+The default view is the contiguous United States at zoom 4.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -22,6 +19,10 @@ SCHEMA_NAME = "navtracker.analytics"
 SCHEMA_VERSION = 1
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 OSM_ATTRIBUTION = "© OpenStreetMap contributors"
+MAPBOX_STYLE = "mapbox/dark-v11"
+DEFAULT_VIEW_LATITUDE = 39.8283
+DEFAULT_VIEW_LONGITUDE = -98.5795
+DEFAULT_VIEW_ZOOM = 4
 
 
 def basemap_document(
@@ -30,15 +31,34 @@ def basemap_document(
     attribution: str,
     min_zoom: int,
     max_zoom: int,
+    *,
+    mapbox_token: str = "",
+    center_latitude: float = DEFAULT_VIEW_LATITUDE,
+    center_longitude: float = DEFAULT_VIEW_LONGITUDE,
+    zoom: int = DEFAULT_VIEW_ZOOM,
 ) -> dict[str, object]:
-    if provider == "osm":
+    view = (center_latitude, center_longitude, zoom)
+    if provider in {"leaflet", "osm"}:
         return _basemap(
-            "osm",
+            "leaflet",
             OSM_TILE_URL,
             attribution or OSM_ATTRIBUTION,
             min_zoom,
             max_zoom,
             False,
+            view,
+            "",
+        )
+    if provider == "mapbox":
+        return _basemap(
+            "mapbox",
+            _mapbox_tiles(mapbox_token),
+            attribution or "© Mapbox © OpenStreetMap",
+            min_zoom,
+            max_zoom,
+            False,
+            view,
+            mapbox_token,
         )
     if provider == "xyz":
         return _basemap(
@@ -48,8 +68,10 @@ def basemap_document(
             min_zoom,
             max_zoom,
             _private_tiles(tile_url),
+            view,
+            "",
         )
-    return _basemap("none", "", attribution, min_zoom, max_zoom, True)
+    return _basemap("none", "", attribution, min_zoom, max_zoom, True, view, "")
 
 
 def routing_metadata(
@@ -257,15 +279,31 @@ def _basemap(
     min_zoom: int,
     max_zoom: int,
     air_gapped: bool,
+    view: tuple[float, float, int],
+    mapbox_token: str,
 ) -> dict[str, object]:
-    return {
+    document: dict[str, object] = {
         "provider": provider,
         "tile_url": tile_url,
         "attribution": attribution,
         "min_zoom": min_zoom,
         "max_zoom": max_zoom,
         "air_gapped": air_gapped,
+        "center_latitude": view[0],
+        "center_longitude": view[1],
+        "zoom": view[2],
     }
+    if provider == "mapbox":
+        document["style"] = MAPBOX_STYLE
+        document["mapbox_token_configured"] = bool(mapbox_token)
+    return document
+
+
+def _mapbox_tiles(token: str) -> str:
+    base = f"https://api.mapbox.com/styles/v1/{MAPBOX_STYLE}/tiles/{{z}}/{{x}}/{{y}}"
+    if not token:
+        return base
+    return base + "?access_token=" + token
 
 
 def _private_tiles(tile_url: str) -> bool:

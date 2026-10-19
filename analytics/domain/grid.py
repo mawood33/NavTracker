@@ -3,9 +3,10 @@
 TransloadOracle was not readable from this environment, so the grid
 system is not copied from that repository. H3 is the recommended
 replacement: one global hex index, a configurable resolution, and a
-stable cell id a frontend can join to a hex tile. Resolution 8 is the
-default (about 460 m edges). Resolution 9 is the tighter alternative
-(about 174 m edges).
+stable cell id a frontend can join to a hex tile. Resolution 9 is the
+default (about a 174 m edge), matching the extracted TransloadOracle
+setting ``h3_resolution``. Resolution 8 is the wider alternative
+(about 460 m).
 
 Each cell keeps the stops inside ``window_seconds``. When
 ``decay_half_life_seconds`` is 0, which is the default, every stop in
@@ -46,7 +47,7 @@ class CellIndex(Protocol):
 class GridPolicy:
     """Hex scoring. Distances elsewhere stay on ``AnalysisThresholds``."""
 
-    resolution: int = 8
+    resolution: int = 9
     window_seconds: float = 86_400
     decay_half_life_seconds: float = 0.0
     hotspot_score: float = 1.5

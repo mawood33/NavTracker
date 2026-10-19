@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Protocol
 
 from analytics.domain.aoi import AreaOfInterest, derive_areas
-from analytics.domain.assessment import merge_catalog, stamp_import, update_sites
+from analytics.domain.assessment import (
+    SiteActivity,
+    assess_site,
+    merge_catalog,
+    stamp_import,
+    update_sites,
+)
 from analytics.domain.behavior import (
     Mill,
     Slowdown,
@@ -18,6 +24,18 @@ from analytics.domain.behavior import (
     detect_slowdowns,
     detect_stops,
 )
+from analytics.domain.correlation import (
+    Activity,
+    Correlation,
+    TacrepMessage,
+    advance_for_gap,
+    correlate,
+    dedupe_messages,
+    manual_advance,
+    message_from_event,
+    parse_tacrep_line,
+    state_site_type,
+)
 from analytics.domain.grid import CellActivity, aggregate_cells
 from analytics.domain.outputs import (
     basemap_document,
@@ -25,7 +43,7 @@ from analytics.domain.outputs import (
     diff_documents,
     routing_metadata,
 )
-from analytics.domain.reference import Msr, Site
+from analytics.domain.reference import Bmoa, Evidence, Msr, Site, match_bmoa, match_msr
 from analytics.domain.reports import (
     Report,
     dedupe_reports,
@@ -33,10 +51,13 @@ from analytics.domain.reports import (
     select_route_reports,
 )
 from analytics.domain.routing import (
+    METERS_PER_MILE,
     RouteCache,
     RoutingError,
     VehicleProfile,
     default_profiles,
+    limit_speed,
+    reject_unsupported_vehicle,
     route_document,
 )
 from analytics.domain.tracks import GpsFix, dedupe_fixes, fix_from_mapping
@@ -88,6 +109,10 @@ class AnalyticsService:
         self._msrs: tuple[Msr, ...] = ()
         self._cells: tuple[CellActivity, ...] = ()
         self._reports: tuple[Report, ...] = ()
+        self._messages: tuple[TacrepMessage, ...] = ()
+        self._correlations: tuple[Correlation, ...] = ()
+        self._activity_overrides: dict[str, Activity] = {}
+        self._bmoas: tuple[Bmoa, ...] = ()
         self._msr_reports: dict[str, tuple[Report, ...]] = {}
         self._index = H3Index(settings.grid.resolution)
         self._router = build_router(
@@ -99,6 +124,8 @@ class AnalyticsService:
             ),
             settings.routing_snap_meters,
             settings.routing_join_meters,
+            settings.routing_mapbox_token,
+            settings.routing_timeout_seconds,
         )
         self._cursors: dict[str, str] = {}
         self._report_cursors: dict[str, str] = {}
@@ -118,6 +145,7 @@ class AnalyticsService:
             Path(directory),
             columns=self.settings.columns,
         )
+        self._bmoas = loaded.bmoas
         self._replace_catalog(loaded.sites, loaded.msrs)
         logger.info(
             "Loaded reference sites=%s msrs=%s from %s",
@@ -178,6 +206,7 @@ class AnalyticsService:
             self._reports,
             self.settings.report_policy,
         )
+        self._correlations = correlate(self._messages, self.settings.correlation)
         self._sites = update_sites(
             self._sites,
             self._areas,
@@ -191,6 +220,7 @@ class AnalyticsService:
             self._index,
             self._reports,
             self.settings.report_policy,
+            self._correlations,
         )
         self._msr_reports = {
             route.name: select_route_reports(
@@ -250,6 +280,10 @@ class AnalyticsService:
             settings.map_attribution,
             settings.map_min_zoom,
             settings.map_max_zoom,
+            mapbox_token=settings.map_mapbox_token,
+            center_latitude=settings.map_center_latitude,
+            center_longitude=settings.map_center_longitude,
+            zoom=settings.map_zoom,
         )
 
     def routing_info(self) -> dict[str, object]:
@@ -267,7 +301,8 @@ class AnalyticsService:
     ) -> dict[str, object]:
         origin = self._named_site(origin_name)
         destination = self._named_site(destination_name)
-        profile = self._named_profile(profile_name)
+        reject_unsupported_vehicle(profile_name)
+        profile = limit_speed(self._named_profile(profile_name), None)
         if origin.latitude is None or origin.longitude is None:
             raise RoutingError(f"Site {origin.name} has no point.")
         if destination.latitude is None or destination.longitude is None:
@@ -300,6 +335,219 @@ class AnalyticsService:
         combined = dedupe_reports((*self._reports, *reports))
         self._reports = combined[-2000:]
 
+    def add_messages(self, messages: list[TacrepMessage]) -> None:
+        if not messages:
+            return
+        stamped: list[TacrepMessage] = []
+        for message in messages:
+            cell_id = self._index.cell_id(message.latitude, message.longitude)
+            bmoa = message.bmoa
+            if not bmoa:
+                area = match_bmoa(message.latitude, message.longitude, self._bmoas)
+                if area is not None:
+                    bmoa = area.name
+            msr_name = message.msr
+            if not msr_name:
+                route = match_msr(
+                    message.latitude,
+                    message.longitude,
+                    self._msrs,
+                    self.settings.thresholds.msr_corridor_meters,
+                )
+                if route is not None:
+                    msr_name = route.name
+            stamped.append(
+                TacrepMessage(
+                    kind=message.kind,
+                    sequence=message.sequence,
+                    observed_at=message.observed_at,
+                    latitude=message.latitude,
+                    longitude=message.longitude,
+                    source_id=message.source_id,
+                    source_message_id=message.source_message_id,
+                    subject=message.subject,
+                    speed_mps=message.speed_mps,
+                    heading=message.heading,
+                    length_m=message.length_m,
+                    width_m=message.width_m,
+                    reported_confidence=message.reported_confidence,
+                    bmoa=bmoa,
+                    msr=msr_name,
+                    cell_id=cell_id,
+                    raw=message.raw,
+                )
+            )
+        self._messages = dedupe_messages((*self._messages, *stamped))[-2000:]
+        self._correlations = correlate(self._messages, self.settings.correlation)
+
+    def api_sites(self) -> list[dict[str, object]]:
+        return [_api_site(site) for site in self._sites]
+
+    def api_route(
+        self,
+        origin_id: str,
+        destination_id: str,
+        vehicle_type: str,
+        max_speed_mph: float | None,
+    ) -> dict[str, object]:
+        reject_unsupported_vehicle(vehicle_type)
+        profile = limit_speed(self._named_profile(vehicle_type), max_speed_mph)
+        origin = self._named_site(origin_id)
+        destination = self._named_site(destination_id)
+        if origin.latitude is None or origin.longitude is None:
+            raise RoutingError(f"Site {origin.name} has no point.", "missing_point")
+        if destination.latitude is None or destination.longitude is None:
+            raise RoutingError(
+                f"Site {destination.name} has no point.",
+                "missing_point",
+            )
+        if origin.name == destination.name:
+            raise RoutingError(
+                "Origin and destination are the same site.",
+                "same_site",
+            )
+        leg = self._router.route(
+            (origin.latitude, origin.longitude),
+            (destination.latitude, destination.longitude),
+            profile,
+            self._msrs,
+        )
+        return {
+            "provider": leg.engine,
+            "routes": [
+                {
+                    "originSiteId": origin.name,
+                    "destinationSiteId": destination.name,
+                    "vehicleType": vehicle_type,
+                    "provider": leg.engine,
+                    "distanceMeters": leg.distance_meters,
+                    "distanceMiles": leg.distance_meters / METERS_PER_MILE,
+                    "durationMinutes": leg.duration_seconds / 60,
+                    "geometry": route_document(leg, origin.name, destination.name)["geometry"],
+                }
+            ],
+        }
+
+    def ingest_event(
+        self,
+        payload: Mapping[str, object],
+        source_id: str = "event",
+    ) -> dict[str, object]:
+        message = message_from_event(payload, source_id=source_id)
+        if message is None:
+            raise ValueError("unreadable event")
+        self.add_messages([message])
+        return {"accepted": 1}
+
+    def ingest_tacrep_body(self, body: str, source_id: str) -> dict[str, object]:
+        message = parse_tacrep_line(body, source_id=source_id)
+        if message is None:
+            raise ValueError("unreadable tacrep")
+        self.add_messages([message])
+        return {"accepted": 1}
+
+    def ingest_batch(self, payload: Mapping[str, object]) -> dict[str, object]:
+        raw = payload.get("events", payload.get("messages", []))
+        if not isinstance(raw, list):
+            raise ValueError("events must be a list")
+        accepted = 0
+        for item in raw:
+            if isinstance(item, str):
+                message = parse_tacrep_line(item, source_id="batch")
+            elif isinstance(item, dict):
+                message = message_from_event(item, source_id="batch")
+            else:
+                message = None
+            if message is None:
+                continue
+            self.add_messages([message])
+            accepted += 1
+        return {"accepted": accepted}
+
+    def correlations_document(self) -> dict[str, object]:
+        return {
+            "correlations": [
+                {
+                    "cell_id": item.cell_id,
+                    "window_start": item.window_start.isoformat(),
+                    "label": item.label,
+                    "best_score": item.best_score,
+                    "source_ids": list(item.source_ids),
+                    "site_types": sorted(item.site_types),
+                    "activity_id": item.activity.activity_id,
+                }
+                for item in self._correlations
+            ]
+        }
+
+    def activities_document(self, as_of: datetime | None = None) -> dict[str, object]:
+        moment = as_of or datetime.now(UTC)
+        return {"activities": [_activity_row(item, moment, self) for item in self._correlations]}
+
+    def advance_activity(
+        self,
+        activity_id: str,
+        as_of: datetime | None = None,
+    ) -> dict[str, object]:
+        moment = as_of or datetime.now(UTC)
+        current = self._activity_by_id(activity_id)
+        if current is None:
+            raise KeyError(activity_id)
+        advanced = manual_advance(current, moment)
+        self._activity_overrides[activity_id] = advanced
+        return _activity_document(advanced)
+
+    def verify_site(self, name: str, as_of: datetime | None = None) -> dict[str, object]:
+        moment = as_of or datetime.now(UTC)
+        updated: list[Site] = []
+        found = False
+        for site in self._sites:
+            if site.name != name:
+                updated.append(site)
+                continue
+            found = True
+            evidence = site.evidence
+            if not any(item.kind == "truth" for item in evidence):
+                evidence = evidence + (
+                    Evidence(
+                        kind="truth",
+                        weight=self.settings.confidence.confirmed_at,
+                        detail="manual verification",
+                        observed_at=moment,
+                    ),
+                )
+            stamped = Site(
+                name=site.name,
+                site_types=site.site_types,
+                status=site.status,
+                confidence=site.confidence,
+                evidence=evidence,
+                origin=site.origin,
+                latitude=site.latitude,
+                longitude=site.longitude,
+                polygon=site.polygon,
+                moa=site.moa,
+                complex_name=site.complex_name,
+                mgrs=site.mgrs,
+                activity_status=site.activity_status,
+                verified=True,
+            )
+            updated.append(
+                assess_site(stamped, _quiet_activity(moment), self.settings.confidence)
+            )
+        if not found:
+            raise KeyError(name)
+        self._sites = tuple(updated)
+        return _api_site(self._named_site(name))
+
+    def _activity_by_id(self, activity_id: str) -> Activity | None:
+        if activity_id in self._activity_overrides:
+            return self._activity_overrides[activity_id]
+        for item in self._correlations:
+            if item.activity.activity_id == activity_id:
+                return item.activity
+        return None
+
     def _profiles(self) -> tuple[VehicleProfile, ...]:
         if self.settings.routing_profiles:
             return self.settings.routing_profiles
@@ -309,7 +557,7 @@ class AnalyticsService:
         for site in self._sites:
             if site.name == name:
                 return site
-        raise RoutingError(f"Unknown site {name}.")
+        raise RoutingError(f"Unknown site {name}.", "missing_site")
 
     def _named_profile(self, name: str) -> VehicleProfile:
         for profile in self._profiles():
@@ -373,6 +621,13 @@ class AnalyticsService:
                 )
                 if report is not None:
                     found.append(report)
+                parsed = parse_tacrep_line(
+                    message.body,
+                    source_id=room,
+                    fallback_message_id=message.message_id,
+                )
+                if parsed is not None:
+                    self.add_messages([parsed])
         return found
 
     async def publish_if_configured(self) -> None:
@@ -453,6 +708,71 @@ class AnalyticsService:
                     except Exception:
                         logger.exception("Frontend publication failed")
             await asyncio.sleep(self.settings.analysis_interval_seconds)
+
+
+def _quiet_activity(as_of: datetime) -> SiteActivity:
+    return SiteActivity(
+        as_of=as_of,
+        stops=0,
+        dwell_seconds=0.0,
+        distinct_vehicles=0,
+        revisits=0,
+        milling=False,
+        on_msr=False,
+        long_dwell=False,
+        cell_id="",
+        cell_score=0.0,
+        cell_hotspot=False,
+        reports=(),
+        last_activity_at=None,
+    )
+
+
+def _api_site(site: Site) -> dict[str, object]:
+    assessment = "verified" if site.status == "confirmed" else site.status
+    return {
+        "id": site.name,
+        "name": site.name,
+        "latitude": site.latitude,
+        "longitude": site.longitude,
+        "status": site.activity_status,
+        "assessment": assessment,
+        "confidence": site.confidence,
+        "types": sorted(site.site_types),
+        "bmoa": site.moa,
+    }
+
+
+def _activity_row(
+    correlation: Correlation,
+    as_of: datetime,
+    service: AnalyticsService,
+) -> dict[str, object]:
+    current = service._activity_overrides.get(
+        correlation.activity.activity_id,
+        correlation.activity,
+    )
+    current = advance_for_gap(
+        current,
+        as_of,
+        service.settings.correlation.hide_gap_minutes,
+    )
+    return _activity_document(current)
+
+
+def _activity_document(activity: Activity) -> dict[str, object]:
+    return {
+        "id": activity.activity_id,
+        "state": activity.state,
+        "cell_id": activity.cell_id,
+        "bmoa": activity.bmoa,
+        "latitude": activity.latitude,
+        "longitude": activity.longitude,
+        "acceptance": activity.acceptance,
+        "updated_at": activity.updated_at.isoformat(),
+        "site_type": state_site_type(activity.state),
+        "source_ids": list(activity.source_ids),
+    }
 
 
 def _json_object(body: str) -> dict[str, object] | None:

@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 from analytics.domain.aoi import AreaOfInterest
 from analytics.domain.behavior import Mill, Slowdown, Stop
@@ -66,6 +66,43 @@ class AnalyticsSnapshot(Protocol):
     ) -> Mapping[str, object]:
         """Route and ETA between two loaded sites."""
 
+    def api_sites(self) -> list[dict[str, object]]:
+        """Sites in the TransloadOracle web shape."""
+
+    def api_route(
+        self,
+        origin_id: str,
+        destination_id: str,
+        vehicle_type: str,
+        max_speed_mph: float | None,
+    ) -> Mapping[str, object]:
+        """One provider response for POST /api/routes."""
+
+    def ingest_event(
+        self,
+        payload: Mapping[str, object],
+        source_id: str = "event",
+    ) -> Mapping[str, object]:
+        """Accept one JSON event."""
+
+    def ingest_tacrep_body(self, body: str, source_id: str) -> Mapping[str, object]:
+        """Accept one TACREP line."""
+
+    def ingest_batch(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        """Accept a batch of events."""
+
+    def correlations_document(self) -> Mapping[str, object]:
+        """Correlation groups."""
+
+    def activities_document(self) -> Mapping[str, object]:
+        """Current activities."""
+
+    def advance_activity(self, activity_id: str) -> Mapping[str, object]:
+        """Move one activity forward one state."""
+
+    def verify_site(self, name: str) -> Mapping[str, object]:
+        """Mark a site confirmed from manual or truth data."""
+
     def public_base(self) -> str:
         """Absolute origin for OGC links, or empty for relative links."""
 
@@ -118,6 +155,28 @@ def route_request(
         return _json(200, heatmap_document(snapshot.cells()))
     if method == "GET" and target == "/routing":
         return _route_response(params, snapshot)
+    if method == "GET" and target == "/api/sites":
+        return _json(200, {"sites": snapshot.api_sites()})
+    if method == "POST" and target == "/api/routes":
+        return _api_routes(body, snapshot)
+    if method == "POST" and target.startswith("/api/sites/") and target.endswith("/verify"):
+        return _verify_site(target, snapshot)
+    if method == "POST" and target == "/v1/events":
+        return _ingest_events(body, snapshot, batch=False, tacrep=False)
+    if method == "POST" and target == "/v1/events/tacrep":
+        return _ingest_events(body, snapshot, batch=False, tacrep=True)
+    if method == "POST" and target == "/v1/events/batch":
+        return _ingest_events(body, snapshot, batch=True, tacrep=False)
+    if method == "GET" and target == "/v1/events/correlations":
+        return _json(200, dict(snapshot.correlations_document()))
+    if method == "GET" and target == "/v1/activities":
+        return _json(200, dict(snapshot.activities_document()))
+    if method == "GET" and target == "/v1/activities/stream":
+        payload = snapshot.activities_document()
+        data = json.dumps(payload, separators=(",", ":"))
+        return 200, f"data: {data}\n\n", "text/event-stream"
+    if method == "POST" and target.startswith("/v1/activities/") and target.endswith("/advance"):
+        return _advance_activity(target, snapshot)
     if method == "GET" and target == "/ogc":
         return _json(
             200,
@@ -151,6 +210,104 @@ def route_request(
 
 
 _COLLECTIONS = ("sites", "cells", "routes", "evidence", "itineraries")
+
+
+def _api_routes(
+    body: bytes,
+    snapshot: AnalyticsSnapshot,
+) -> tuple[int, dict[str, object] | str, str]:
+    payload = _object(body)
+    if payload is None:
+        return _error(400, "Expected a JSON object.", "invalid_json")
+    origin = str(payload.get("originSiteId", "") or "").strip()
+    destination = str(payload.get("destinationSiteId", "") or "").strip()
+    vehicle = str(payload.get("vehicleType", "truck") or "truck").strip() or "truck"
+    speed = payload.get("maxSpeedMph")
+    mph: float | None
+    if speed is None or speed == "":
+        mph = None
+    elif isinstance(speed, bool) or not isinstance(speed, (int, float)):
+        return _error(400, "maxSpeedMph must be a number.", "invalid_speed")
+    else:
+        mph = float(speed)
+    if not origin or not destination:
+        return _error(400, "originSiteId and destinationSiteId are required.", "missing_site")
+    try:
+        return _json(200, dict(snapshot.api_route(origin, destination, vehicle, mph)))
+    except RoutingError as exc:
+        status = 400 if exc.code in {"rail_unsupported", "invalid_speed", "missing_site"} else 404
+        return _error(status, str(exc), exc.code)
+
+
+def _verify_site(
+    target: str,
+    snapshot: AnalyticsSnapshot,
+) -> tuple[int, dict[str, object] | str, str]:
+    name = unquote(target[len("/api/sites/") : -len("/verify")]).strip("/")
+    if not name:
+        return _error(404, "Unknown site.", "not_found")
+    try:
+        return _json(200, dict(snapshot.verify_site(name)))
+    except KeyError:
+        return _error(404, "Unknown site.", "not_found")
+
+
+def _advance_activity(
+    target: str,
+    snapshot: AnalyticsSnapshot,
+) -> tuple[int, dict[str, object] | str, str]:
+    activity_id = unquote(target[len("/v1/activities/") : -len("/advance")]).strip("/")
+    try:
+        return _json(200, dict(snapshot.advance_activity(activity_id)))
+    except KeyError:
+        return _error(404, "Unknown activity.", "not_found")
+
+
+def _ingest_events(
+    body: bytes,
+    snapshot: AnalyticsSnapshot,
+    *,
+    batch: bool,
+    tacrep: bool,
+) -> tuple[int, dict[str, object] | str, str]:
+    try:
+        if tacrep:
+            text = body.decode("utf-8")
+            payload = _object(body)
+            if payload is not None and isinstance(payload.get("tacrep"), str):
+                text = str(payload["tacrep"])
+                source = str(payload.get("source_id", "tacrep") or "tacrep")
+            else:
+                source = "tacrep"
+            return _json(200, dict(snapshot.ingest_tacrep_body(text, source)))
+        payload = _object(body)
+        if payload is None:
+            return _error(400, "Expected a JSON object.", "invalid_json")
+        if batch:
+            return _json(200, dict(snapshot.ingest_batch(payload)))
+        return _json(200, dict(snapshot.ingest_event(payload)))
+    except ValueError as exc:
+        return _error(400, str(exc), "invalid_event")
+
+
+def _object(body: bytes) -> dict[str, object] | None:
+    if not body:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except ValueError:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _error(
+    status: int,
+    message: str,
+    code: str,
+) -> tuple[int, dict[str, object] | str, str]:
+    return status, {"error": message, "code": code}, "application/json"
 
 
 def _route_response(

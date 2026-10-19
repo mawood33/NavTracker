@@ -89,25 +89,32 @@ GPS can arrive from ChatSurfer rooms (`chatsurfer.read_rooms`) and, when enabled
 
 TACREP rooms (`chatsurfer.tacrep_rooms` or `CHAT_SURFER_TACREP_ROOMS`) and Clairvoyant report layers (`clairvoyant.report_layers`, only when Clairvoyant is enabled) are non-GPS evidence. Reports are deduplicated, keep source, layer, and message id, and can raise site confidence.
 
-Sites keep a set of types (`hide`, `launch`, `transload`), a status (`possible`, `probable`, `confirmed`), and a numeric confidence. Imports start at `possible` with confidence 0.2. Decay is off unless `analytics.confidence.decay_per_day` is greater than 0. Hex activity uses H3 resolution 8. MSR corridors default to a 50 meter buffer.
+Sites keep a set of types (`hide`, `launch`, `transload`), a status (`possible`, `probable`, `confirmed`), and a numeric confidence. Imports start at `possible` with confidence 0.2. Decay is off unless `analytics.confidence.decay_per_day` is greater than 0. The external assessment name `verified` means `confirmed`. Manual verification and the confidence thresholds can both reach `confirmed`. Operational status is separate: `unknown`, `active`, or `inactive`. Hex activity uses H3 resolution 9. MSR corridors default to a 50 meter buffer.
+
+TACREP lines use `KIND-seq//time//lat,lon//key=value`. Kinds are `O` (launch), `I` (imagery), `J` (movement), `E` (electronic), and `UNKNOWN`. Activities move `pre_launch_hide` → `launch` → `hide_after_launch` → `transload` → `hide_after_transload`. An `O` message enters `launch`. A gap longer than 20 minutes enters the next hide state. A `J`, `I`, or `E` message enters `transload` from `hide_after_launch` when it shares a BMOA. Pair score is `0.45 * same_subject + 0.35 * spatial + 0.20 * time`, grouped by H3 cell and a 45-minute window. A group is `probable` with at least three sources and a best score of at least 0.70.
 
 ### Basemap
 
-`analytics.map.provider` is `none` (default, no tile host), `osm` (public OpenStreetMap tiles, no API key), or `xyz` (requires `ANALYTICS_MAP_TILE_URL`). The choice is included in the WebSocket snapshot and the OGC landing page. No API key is written into the repository.
+`NEXT_PUBLIC_MAP_PROVIDER` (or `analytics.map.provider`) is `leaflet` by default. Leaflet uses public OpenStreetMap tiles. `mapbox` uses style `mapbox/dark-v11` and requires `NEXT_PUBLIC_MAPBOX_TOKEN`. `none` serves no tiles. `xyz` requires `ANALYTICS_MAP_TILE_URL`. `osm` is accepted as `leaflet`. The default view is latitude 39.8283, longitude -98.5795, zoom 4. The choice is included in the WebSocket snapshot and the OGC landing page. No API key is written into the repository.
 
 ### Routing
 
-`analytics.routing.engine` is `msr` (default), `osrm`, `valhalla`, or `graphhopper`. `msr` routes along imported MSR corridors and makes no network call. The other engines need `ANALYTICS_ROUTING_BASE_URL` (YAML `osrm_base_url`, `valhalla_base_url`, or `graphhopper_base_url`). Travel time uses the vehicle profile (`max_speed_mps`, weight class, type, and an ETA factor). OSRM does not receive height, weight, or hazmat. Valhalla receives a top speed only. GraphHopper receives the profile name. Successful engine responses are cached. `GET /routing?from_site=&to_site=&profile=truck` returns the line and the ETA. The same route is `GET /ogc/collections/itineraries/items` with those query parameters.
+`ROUTING_PROVIDER` (or `analytics.routing.engine`) is `osrm` by default, at `https://router.project-osrm.org`, with a 15 second timeout. `mapbox` uses the Mapbox Directions API and the same token as the basemap. `valhalla` and `graphhopper` need `ANALYTICS_ROUTING_BASE_URL`. `msr` routes along imported MSR corridors and makes no network call. Vehicle types are `truck` and `intermodal`. `rail` returns an error. `light` and `heavy` are extra size profiles. ETA minutes are `max(engine minutes, miles / maxSpeedMph * 60)` with `maxSpeedMph` capped at 120, then multiplied by the profile ETA factor (1.0 for truck and intermodal). OSRM and Mapbox do not receive height, weight, or hazmat. Valhalla receives a top speed only. GraphHopper receives the profile name. Successful engine responses are cached. `POST /api/routes` accepts `{originSiteId, destinationSiteId, vehicleType, maxSpeedMph}`. `GET /routing?from_site=&to_site=&profile=truck` returns the same line and ETA. The route is also `GET /ogc/collections/itineraries/items`.
 
 ### Outputs
 
 - `GET /ws` sends a versioned snapshot (`navtracker.analytics` version 1) and then diffs.
 - `GET /ogc` is an OGC API - Features landing page. Collections are sites, cells, routes, evidence, and itineraries. Item requests accept `bbox` and `datetime`.
 - `GET /geojson`, `GET /heatmap`, and `GET /kml` export the current picture. `GET /kml/networklink` is a KML NetworkLink pointed at `/kml`.
+- `GET /api/sites` returns `{sites}` with operational `status` and assessment `possible`, `probable`, or `verified`.
+- `POST /api/routes` returns `{provider, routes}`.
+- `POST /v1/events`, `POST /v1/events/tacrep`, and `POST /v1/events/batch` accept TACREP.
+- `GET /v1/events/correlations` and `GET /v1/activities` return the current groups. `GET /v1/activities/stream` sends one server-sent event. Clients can poll `/v1/activities` every 10 seconds.
+- `POST /v1/activities/{id}/advance` moves one activity one state. Errors are `{error, code}`.
 
 OGC SensorThings, WMS/WMTS, and vector tiles are not implemented.
 
-The optional frontend is off unless `frontend.enabled` is true, which also requires `ANALYTICS_FRONTEND_INGEST_URL`. The process then POSTs the same snapshot and diff documents to that URL. `docker compose --profile frontend up analytics-frontend` serves `analytics/frontend/index.html` on port 8081. That page is a NavTracker viewer for `/ws` and `/routing`. It is not a TransloadOracle UI. TransloadOracle was not readable from this environment.
+The optional frontend is off unless `frontend.enabled` is true, which also requires `ANALYTICS_FRONTEND_INGEST_URL`. The process then POSTs the same snapshot and diff documents to that URL. `docker compose --profile frontend up analytics-frontend` serves `analytics/frontend/index.html` on port 8081. That page is a NavTracker viewer for `/ws` and `/routing`. The `/api` and `/v1` routes are the adapter a TransloadOracle frontend can call.
 
 ## Rollback and emergency operation
 

@@ -1,19 +1,16 @@
 """Route between two sites and estimate travel time.
 
-https://github.com/mawood33/TransloadOracle was not readable here (404),
-so this is not a port of that repository's routing package. The shape
-follows the engines that project would be expected to use: OSRM first,
-then Valhalla and GraphHopper, then an offline fallback that stays on
-imported MSR corridors.
+TransloadOracle's extracted routing contract is the default: provider
+``osrm`` or ``mapbox``, public OSRM at ``https://router.project-osrm.org``,
+and ETA minutes ``max(engine_minutes, miles / maxSpeedMph * 60)`` with
+``maxSpeedMph`` capped at 120. Vehicle types are ``truck``,
+``intermodal``, and ``rail`` (rail is rejected). Valhalla, GraphHopper,
+the MSR corridor fallback, and the light/heavy size profiles are
+NavTracker extras. ``eta_factor`` multiplies that ETA for the size
+profiles and is 1.0 for truck and intermodal.
 
-Engine limits: OSRM's public API takes a profile name such as
-``driving`` and does not accept truck height, weight, or hazmat.
-Valhalla can take ``costing=truck`` and ``top_speed``; this adapter
-sends those and does not send axle weight or height because the
-vehicle profile does not carry them. GraphHopper receives a profile
-name only. In every engine the ETA returned to callers is
-``distance / max_speed_mps * eta_factor``. The engine's own duration
-is kept on ``engine_duration_seconds`` for comparison.
+OSRM and Mapbox receive a driving profile, not height, weight, or
+hazmat. Valhalla receives costing and top speed only.
 """
 
 import heapq
@@ -28,6 +25,17 @@ from analytics.domain.reference import Msr
 class RoutingError(Exception):
     """No route could be produced for these sites."""
 
+    def __init__(self, message: str, code: str = "routing_error"):
+        super().__init__(message)
+        self.code = code
+
+
+METERS_PER_MILE = 1609.344
+MAX_SPEED_MPH = 120.0
+OSRM_PUBLIC_BASE_URL = "https://router.project-osrm.org"
+MAPBOX_DIRECTIONS_BASE = "https://api.mapbox.com"
+ROUTING_TIMEOUT_SECONDS = 15.0
+
 
 @dataclass(frozen=True)
 class VehicleProfile:
@@ -37,10 +45,12 @@ class VehicleProfile:
     max_speed_mps: float = 18.0
     weight_class: str = "heavy"
     vehicle_type: str = "truck"
-    eta_factor: float = 1.4
+    eta_factor: float = 1.0
     osrm_profile: str = "driving"
     valhalla_costing: str = "truck"
     graphhopper_profile: str = "truck"
+    mapbox_profile: str = "driving"
+    max_speed_mph: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -59,8 +69,15 @@ class RouteLeg:
 
 
 def default_profiles() -> tuple[VehicleProfile, ...]:
+    """Truck and intermodal match the extracted vehicle types.
+
+    ``light`` and ``heavy`` are extra size profiles. ``heavy`` keeps an
+    ETA factor above 1. Rail is not a profile; requesting it raises.
+    """
+
     return (
-        VehicleProfile(name="truck"),
+        VehicleProfile(name="truck", vehicle_type="truck"),
+        VehicleProfile(name="intermodal", vehicle_type="intermodal"),
         VehicleProfile(
             name="light",
             max_speed_mps=25.0,
@@ -70,31 +87,86 @@ def default_profiles() -> tuple[VehicleProfile, ...]:
             osrm_profile="driving",
             valhalla_costing="auto",
             graphhopper_profile="car",
+            mapbox_profile="driving",
         ),
+        VehicleProfile(
+            name="heavy",
+            weight_class="heavy",
+            vehicle_type="truck",
+            eta_factor=1.4,
+        ),
+    )
+
+
+def reject_unsupported_vehicle(vehicle_type: str) -> None:
+    """Rail is named by TransloadOracle and is not routed."""
+
+    if vehicle_type.strip().lower() == "rail":
+        raise RoutingError("Rail routing is not supported.", "rail_unsupported")
+
+
+def limit_speed(profile: VehicleProfile, max_speed_mph: float | None) -> VehicleProfile:
+    """Cap a requested speed at 120 mph and store both units."""
+
+    if max_speed_mph is None:
+        return profile
+    if max_speed_mph <= 0:
+        raise RoutingError("maxSpeedMph must be positive.", "invalid_speed")
+    capped = min(max_speed_mph, MAX_SPEED_MPH)
+    return replace(
+        profile,
+        max_speed_mph=capped,
+        max_speed_mps=capped * METERS_PER_MILE / 3600,
     )
 
 
 def apply_profile_eta(leg: RouteLeg, profile: VehicleProfile) -> RouteLeg:
-    """Replace the engine duration with the profile ETA."""
+    """ETA is the slower of the engine time and the capped speed time."""
 
+    engine_seconds = (
+        leg.engine_duration_seconds
+        if leg.engine_duration_seconds is not None
+        else leg.duration_seconds
+    )
     return replace(
         leg,
-        duration_seconds=eta_seconds(leg.distance_meters, profile),
+        duration_seconds=eta_seconds(leg.distance_meters, profile, engine_seconds),
         profile_name=profile.name,
-        engine_duration_seconds=(
-            leg.engine_duration_seconds
-            if leg.engine_duration_seconds is not None
-            else leg.duration_seconds
-        ),
+        engine_duration_seconds=engine_seconds,
     )
 
 
-def eta_seconds(distance_meters: float, profile: VehicleProfile) -> float:
-    if profile.max_speed_mps <= 0:
-        raise RoutingError(f"Profile {profile.name} has no positive max speed.")
+def eta_seconds(
+    distance_meters: float,
+    profile: VehicleProfile,
+    engine_seconds: float | None = None,
+) -> float:
+    """Return seconds. ``engine_seconds`` None uses the speed term only."""
+
     if profile.eta_factor <= 0:
         raise RoutingError(f"Profile {profile.name} has no positive ETA factor.")
-    return distance_meters / profile.max_speed_mps * profile.eta_factor
+    speed_seconds = distance_meters / profile_speed_mps(profile)
+    if engine_seconds is None:
+        base = speed_seconds
+    else:
+        base = max(engine_seconds, speed_seconds)
+    return base * profile.eta_factor
+
+
+def profile_speed_mps(profile: VehicleProfile) -> float:
+    """Speed used for ETA, after the 120 mph cap."""
+
+    if profile.max_speed_mph > 0:
+        mph = min(profile.max_speed_mph, MAX_SPEED_MPH)
+        speed = mph * METERS_PER_MILE / 3600
+    else:
+        speed = profile.max_speed_mps
+        mph = speed * 3600 / METERS_PER_MILE
+        if mph > MAX_SPEED_MPH:
+            speed = MAX_SPEED_MPH * METERS_PER_MILE / 3600
+    if speed <= 0:
+        raise RoutingError(f"Profile {profile.name} has no positive max speed.")
+    return speed
 
 
 def cache_key(

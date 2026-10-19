@@ -1,11 +1,8 @@
 """Non-GPS reports attached to sites, hex cells, and MSR corridors.
 
-TACREP parsing is provisional. https://github.com/mawood33/TransloadOracle
-returned 404 from this environment, so this module is not a port of that
-repository. ``parse_tacrep`` and ``ReportPolicy`` are the functions to
-replace when that repository can be read.
-
-A ChatSurfer TACREP room accepts either JSON or a short text form.
+The primary TACREP line is ``KIND-seq//time//lat,lon//key=value``.
+Kinds are ``O``, ``I``, ``J``, ``E``, and ``UNKNOWN``. A ChatSurfer
+room can also send JSON or the older text form below.
 
 JSON keys: ``type`` / ``activity`` / ``category``, ``latitude`` or
 ``lat``, ``longitude`` or ``lon``, ``timestamp`` / ``time`` / ``dtg``,
@@ -33,6 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from analytics.domain.correlation import TacrepMessage, parse_tacrep_line
 from analytics.domain.geo import haversine_meters, point_in_polygon
 from analytics.domain.reference import Msr, match_msr, parse_site_types
 from analytics.domain.thresholds import AnalysisThresholds
@@ -101,11 +99,18 @@ class Report:
     site_type: str
     summary: str
     keywords: tuple[str, ...] = ()
+    source_id: str = ""
+    tacrep_kind: str = ""
+    subject: str = ""
+    bmoa: str = ""
+    msr_name: str = ""
 
 
 def report_key(report: Report) -> tuple[str, str, str]:
     """Identity used to drop the same message seen twice."""
 
+    if report.source_id and report.message_id:
+        return (report.source_id, "", report.message_id)
     if report.message_id:
         return (report.source, report.layer, report.message_id)
     latitude = "" if report.latitude is None else f"{report.latitude:.5f}"
@@ -140,6 +145,13 @@ def parse_tacrep(
     text = body.strip()
     if not text:
         return None
+    parsed = parse_tacrep_line(
+        text,
+        source_id=layer,
+        fallback_message_id=message_id,
+    )
+    if parsed is not None:
+        return _report_from_tacrep(parsed)
     if text[0] in "{[":
         try:
             payload = json.loads(text)
@@ -289,6 +301,25 @@ def report_document(report: Report) -> dict[str, object]:
         "summary": report.summary,
         "keywords": list(report.keywords),
     }
+
+
+def _report_from_tacrep(message: TacrepMessage) -> Report:
+    site_type = "launch" if message.kind == "O" else ""
+    return Report(
+        source="chatsurfer",
+        layer=message.source_id,
+        message_id=message.source_message_id,
+        observed_at=message.observed_at,
+        latitude=message.latitude,
+        longitude=message.longitude,
+        site_type=site_type,
+        summary=message.raw,
+        source_id=message.source_id,
+        tacrep_kind=message.kind,
+        subject=message.subject,
+        bmoa=message.bmoa,
+        msr_name=message.msr,
+    )
 
 
 def _in_window(report: Report, as_of: datetime, policy: ReportPolicy) -> bool:

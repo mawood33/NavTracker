@@ -6,9 +6,15 @@ import yaml
 
 from analytics.application.failover import ClairvoyantFailover
 from analytics.domain.assessment import ConfidencePolicy
+from analytics.domain.correlation import CorrelationPolicy
 from analytics.domain.grid import GridPolicy
 from analytics.domain.reports import ReportPolicy
-from analytics.domain.routing import VehicleProfile, default_profiles
+from analytics.domain.routing import (
+    MAPBOX_DIRECTIONS_BASE,
+    OSRM_PUBLIC_BASE_URL,
+    VehicleProfile,
+    default_profiles,
+)
 from analytics.domain.thresholds import AnalysisThresholds
 from analytics.infrastructure.reference_parse import ColumnMap
 from navtracker_common.crypto import fernet_key_for_mode, require_public_material
@@ -18,8 +24,8 @@ _ENVIRONMENTS = ("development", "staging", "production")
 _CRYPTO_MODES = {"pem", "ssh", "fernet"}
 _SPEED_UNITS = {"mps", "kmh"}
 _CLAIRVOYANT_MODES = {"websocket", "poll"}
-_MAP_PROVIDERS = {"none", "osm", "xyz"}
-_ROUTING_ENGINES = {"msr", "osrm", "valhalla", "graphhopper"}
+_MAP_PROVIDERS = {"leaflet", "mapbox", "none", "xyz", "osm"}
+_ROUTING_ENGINES = {"msr", "osrm", "valhalla", "graphhopper", "mapbox"}
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,13 @@ class AnalyticsSettings:
     frontend_ingest_url: str
     public_base_url: str
     columns: ColumnMap
+    correlation: CorrelationPolicy = CorrelationPolicy()
+    routing_timeout_seconds: float = 15
+    routing_mapbox_token: str = ""
+    map_center_latitude: float = 39.8283
+    map_center_longitude: float = -98.5795
+    map_zoom: int = 4
+    map_mapbox_token: str = ""
 
 
 def load_analytics_settings(
@@ -359,10 +372,51 @@ def load_analytics_settings(
             str(analytics.get("public_base_url", "")),
         ).strip(),
         columns=_columns(reference),
+        correlation=_correlation(analytics),
+        routing_timeout_seconds=_positive(
+            "ANALYTICS_ROUTING_TIMEOUT_SECONDS",
+            pick_setting(
+                "ANALYTICS_ROUTING_TIMEOUT_SECONDS",
+                _routing_block(analytics).get("timeout_seconds"),
+                15,
+            ),
+        ),
+        routing_mapbox_token=_mapbox_token(_routing_block(analytics)),
+        map_center_latitude=_finite(
+            "ANALYTICS_MAP_CENTER_LATITUDE",
+            pick_setting(
+                "ANALYTICS_MAP_CENTER_LATITUDE",
+                _map_block(analytics).get("center_latitude"),
+                39.8283,
+            ),
+        ),
+        map_center_longitude=_finite(
+            "ANALYTICS_MAP_CENTER_LONGITUDE",
+            pick_setting(
+                "ANALYTICS_MAP_CENTER_LONGITUDE",
+                _map_block(analytics).get("center_longitude"),
+                -98.5795,
+            ),
+        ),
+        map_zoom=int(
+            _non_negative(
+                "ANALYTICS_MAP_ZOOM",
+                pick_setting(
+                    "ANALYTICS_MAP_ZOOM",
+                    _map_block(analytics).get("zoom"),
+                    4,
+                ),
+            )
+        ),
+        map_mapbox_token=_mapbox_token(_map_block(analytics)),
     )
     if settings.frontend_enabled and not settings.frontend_ingest_url:
         raise RuntimeError(
             "ANALYTICS_FRONTEND_ENABLED=true requires ANALYTICS_FRONTEND_INGEST_URL."
+        )
+    if settings.map_provider == "mapbox" and not settings.map_mapbox_token:
+        raise RuntimeError(
+            "NEXT_PUBLIC_MAP_PROVIDER=mapbox requires NEXT_PUBLIC_MAPBOX_TOKEN."
         )
     if settings.map_min_zoom > settings.map_max_zoom:
         raise RuntimeError(
@@ -637,15 +691,16 @@ def _frontend_block(loaded: dict[str, object]) -> dict[str, object]:
 
 
 def _map_provider(analytics: dict[str, object]) -> str:
-    return _choice(
+    public = os.getenv("NEXT_PUBLIC_MAP_PROVIDER", "").strip()
+    raw = public or pick_setting(
         "ANALYTICS_MAP_PROVIDER",
-        pick_setting(
-            "ANALYTICS_MAP_PROVIDER",
-            _map_block(analytics).get("provider"),
-            "none",
-        ),
-        _MAP_PROVIDERS,
+        _map_block(analytics).get("provider"),
+        "leaflet",
     )
+    chosen = _choice("NEXT_PUBLIC_MAP_PROVIDER", raw, _MAP_PROVIDERS)
+    if chosen == "osm":
+        return "leaflet"
+    return chosen
 
 
 def _map_tile_url(analytics: dict[str, object]) -> str:
@@ -661,15 +716,13 @@ def _map_tile_url(analytics: dict[str, object]) -> str:
 
 
 def _routing_engine(analytics: dict[str, object]) -> str:
-    return _choice(
+    routed = os.getenv("ROUTING_PROVIDER", "").strip()
+    raw = routed or pick_setting(
         "ANALYTICS_ROUTING_ENGINE",
-        pick_setting(
-            "ANALYTICS_ROUTING_ENGINE",
-            _routing_block(analytics).get("engine"),
-            "msr",
-        ),
-        _ROUTING_ENGINES,
+        _routing_block(analytics).get("engine"),
+        "osrm",
     )
+    return _choice("ROUTING_PROVIDER", raw, _ROUTING_ENGINES)
 
 
 def _routing_base_url(analytics: dict[str, object]) -> str:
@@ -679,16 +732,93 @@ def _routing_base_url(analytics: dict[str, object]) -> str:
         "osrm": "osrm_base_url",
         "valhalla": "valhalla_base_url",
         "graphhopper": "graphhopper_base_url",
+        "mapbox": "mapbox_base_url",
     }.get(engine, "base_url")
-    url = env_setting(
-        "ANALYTICS_ROUTING_BASE_URL",
-        str(block.get(yaml_key, "")),
-    ).strip()
-    if engine != "msr" and not url:
+    fallback = ""
+    if engine == "osrm":
+        fallback = OSRM_PUBLIC_BASE_URL
+    elif engine == "mapbox":
+        fallback = MAPBOX_DIRECTIONS_BASE
+    configured = str(block.get(yaml_key, "") or "")
+    url = env_setting("ANALYTICS_ROUTING_BASE_URL", configured or fallback).strip() or fallback
+    if engine in {"valhalla", "graphhopper"} and not url:
         raise RuntimeError(
-            f"ANALYTICS_ROUTING_ENGINE={engine} requires ANALYTICS_ROUTING_BASE_URL."
+            f"ROUTING_PROVIDER={engine} requires ANALYTICS_ROUTING_BASE_URL."
+        )
+    if engine == "mapbox" and not _mapbox_token(block):
+        raise RuntimeError(
+            "ROUTING_PROVIDER=mapbox requires NEXT_PUBLIC_MAPBOX_TOKEN."
         )
     return url
+
+
+def _mapbox_token(block: dict[str, object]) -> str:
+    for name in ("NEXT_PUBLIC_MAPBOX_TOKEN", "ANALYTICS_MAPBOX_TOKEN"):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return str(block.get("mapbox_token", "") or "").strip()
+
+
+def _correlation(analytics: dict[str, object]) -> CorrelationPolicy:
+    raw = _nested(analytics.get("correlation"), "analytics.correlation")
+    defaults = CorrelationPolicy()
+    sources = _positive(
+        "ANALYTICS_CORRELATION_MINIMUM_SOURCES",
+        pick_setting(
+            "ANALYTICS_CORRELATION_MINIMUM_SOURCES",
+            raw.get("minimum_sources"),
+            defaults.minimum_sources,
+        ),
+    )
+    if sources != int(sources):
+        raise RuntimeError(
+            "Invalid ANALYTICS_CORRELATION_MINIMUM_SOURCES. Expected an integer."
+        )
+    return CorrelationPolicy(
+        window_minutes=_positive(
+            "ANALYTICS_CORRELATION_WINDOW_MINUTES",
+            pick_setting(
+                "ANALYTICS_CORRELATION_WINDOW_MINUTES",
+                raw.get("window_minutes"),
+                defaults.window_minutes,
+            ),
+        ),
+        hide_gap_minutes=_non_negative(
+            "ANALYTICS_CORRELATION_HIDE_GAP_MINUTES",
+            pick_setting(
+                "ANALYTICS_CORRELATION_HIDE_GAP_MINUTES",
+                raw.get("hide_gap_minutes"),
+                defaults.hide_gap_minutes,
+            ),
+        ),
+        minimum_correlation_score=_non_negative(
+            "ANALYTICS_CORRELATION_MINIMUM_SCORE",
+            pick_setting(
+                "ANALYTICS_CORRELATION_MINIMUM_SCORE",
+                raw.get("minimum_score"),
+                defaults.minimum_correlation_score,
+            ),
+        ),
+        minimum_sources=int(sources),
+        minimum_transload_speed_mps=_non_negative(
+            "ANALYTICS_CORRELATION_MINIMUM_TRANSLOAD_SPEED_MPS",
+            pick_setting(
+                "ANALYTICS_CORRELATION_MINIMUM_TRANSLOAD_SPEED_MPS",
+                raw.get("minimum_transload_speed_mps"),
+                defaults.minimum_transload_speed_mps,
+            ),
+        ),
+    )
+
+
+def _finite(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise RuntimeError(f"Invalid {name}={value!r}. Expected a number.")
+    try:
+        return float(value)
+    except ValueError:
+        raise RuntimeError(f"Invalid {name}={value!r}. Expected a number.") from None
 
 
 def _routing_profiles(analytics: dict[str, object]) -> tuple[VehicleProfile, ...]:

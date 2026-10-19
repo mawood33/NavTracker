@@ -26,13 +26,14 @@ headers above, plus plain ``lat``/``lon`` and ``type``.
 
 import csv
 import io
+import json
 import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from analytics.domain.reference import Msr, ReferenceData, Site, parse_site_types
+from analytics.domain.reference import Bmoa, Msr, ReferenceData, Site, parse_site_types
 
 _MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _DMS_RE = re.compile(
@@ -132,7 +133,31 @@ def parse_kml(data: bytes) -> ReferenceData:
     sites: list[Site] = []
     msrs: list[Msr] = []
     _walk_kml(root, "", "", sites, msrs)
-    return ReferenceData(sites=tuple(sites), msrs=tuple(msrs))
+    return _split_bmoas(sites, msrs)
+
+
+def parse_geojson(data: bytes) -> ReferenceData:
+    """Read points as sites, lines as MSRs, and BMOA polygons as areas."""
+
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except ValueError as exc:
+        raise ValueError("GeoJSON was not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("GeoJSON must be a Feature or FeatureCollection")
+    kind = str(payload.get("type") or "")
+    if kind == "FeatureCollection":
+        raw = payload.get("features")
+        features = raw if isinstance(raw, list) else []
+    elif kind == "Feature":
+        features = [payload]
+    else:
+        raise ValueError("GeoJSON must be a Feature or FeatureCollection")
+    sites: list[Site] = []
+    msrs: list[Msr] = []
+    for feature in features:
+        _read_geojson_feature(feature, sites, msrs)
+    return _split_bmoas(sites, msrs)
 
 
 def _bind_kml_prefix(data: bytes) -> bytes:
@@ -177,6 +202,8 @@ def load_reference_file(
         return parse_kmz(data)
     if suffix == ".kml":
         return parse_kml(data)
+    if suffix == ".geojson":
+        return parse_geojson(data)
     if suffix == ".csv":
         complex_name = _complex_from_filename(path.name)
         return parse_csv_sites(
@@ -200,12 +227,94 @@ def load_reference_dir(
     for path in sorted(directory.iterdir()):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in {".kml", ".kmz", ".csv", ".xlsx"} and not (
+        if path.suffix.lower() not in {".kml", ".kmz", ".csv", ".xlsx", ".geojson"} and not (
             path.name.lower().endswith(".kmz.zip")
         ):
             continue
         combined = combined.merge(load_reference_file(path, columns=columns))
     return combined
+
+
+def _split_bmoas(sites: list[Site], msrs: list[Msr]) -> ReferenceData:
+    kept: list[Site] = []
+    areas: list[Bmoa] = []
+    for site in sites:
+        if site.polygon and "bmoa" in site.name.lower():
+            areas.append(Bmoa(name=site.name, polygon=site.polygon))
+        else:
+            kept.append(site)
+    return ReferenceData(sites=tuple(kept), msrs=tuple(msrs), bmoas=tuple(areas))
+
+
+def _read_geojson_feature(
+    feature: object,
+    sites: list[Site],
+    msrs: list[Msr],
+) -> None:
+    if not isinstance(feature, dict):
+        return
+    properties = feature.get("properties")
+    props = properties if isinstance(properties, dict) else {}
+    name = str(props.get("name") or props.get("Name") or props.get("id") or "unnamed")
+    geometry = feature.get("geometry")
+    if not isinstance(geometry, dict):
+        return
+    kind = str(geometry.get("type") or "")
+    coordinates = geometry.get("coordinates")
+    if kind == "Point":
+        point = _lonlat_pair(coordinates)
+        if point is None:
+            return
+        latitude, longitude = point
+        sites.append(
+            Site(
+                name=name,
+                latitude=latitude,
+                longitude=longitude,
+                moa=moa_from_site_name(name),
+            )
+        )
+        return
+    if kind == "LineString" and isinstance(coordinates, list):
+        line = _lonlat_pairs(coordinates)
+        if len(line) >= 2:
+            msrs.append(Msr(name=name, points=line))
+        return
+    if kind == "Polygon" and isinstance(coordinates, list) and coordinates:
+        ring_raw = coordinates[0]
+        if not isinstance(ring_raw, list):
+            return
+        ring = _lonlat_pairs(ring_raw)
+        if len(ring) < 3:
+            return
+        sites.append(
+            Site(
+                name=name,
+                latitude=sum(point[0] for point in ring) / len(ring),
+                longitude=sum(point[1] for point in ring) / len(ring),
+                polygon=ring,
+                moa=moa_from_site_name(name),
+            )
+        )
+
+
+def _lonlat_pairs(raw: list[object]) -> tuple[tuple[float, float], ...]:
+    found: list[tuple[float, float]] = []
+    for item in raw:
+        pair = _lonlat_pair(item)
+        if pair is not None:
+            found.append(pair)
+    return tuple(found)
+
+
+def _lonlat_pair(value: object) -> tuple[float, float] | None:
+    if not isinstance(value, list) or len(value) < 2:
+        return None
+    if isinstance(value[0], bool) or isinstance(value[1], bool):
+        return None
+    if not isinstance(value[0], (int, float)) or not isinstance(value[1], (int, float)):
+        return None
+    return float(value[1]), float(value[0])
 
 
 def _sites_from_rows(
