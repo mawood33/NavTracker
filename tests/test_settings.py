@@ -41,7 +41,7 @@ _SETTINGS_ENV = (
 
 
 def _scrub(monkeypatch):
-    for name in _DOCUMENTED_SETTINGS:
+    for name in _SETTINGS_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("NAVIXY_API_KEY", "navixy-key")
     monkeypatch.setenv("CHAT_SURFER_API_KEY", "chat-key")
@@ -189,7 +189,7 @@ def test_compose_passes_app_env_into_the_container():
 
 def test_env_example_documents_every_setting_and_stays_trackable():
     example = Path(".env.example").read_text(encoding="utf-8")
-    for name in _DOCUMENTED_SETTINGS:
+    for name in _SETTINGS_ENV:
         assert name in example
 
     ignored = subprocess.run(
