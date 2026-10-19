@@ -1,7 +1,6 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-
 from app.domain.entities import TrackerPosition
 from app.infrastructure.navixy_parse import (
     parse_poll_response,
@@ -9,7 +8,7 @@ from app.infrastructure.navixy_parse import (
     parse_websocket_event,
 )
 
-WHEN = datetime(2026, 1, 1, tzinfo=timezone.utc)
+WHEN = datetime(2026, 1, 1, tzinfo=UTC)
 
 STATE = {
     "source_id": 7,
@@ -127,6 +126,19 @@ def test_nested_gps_wins_over_flat_coordinates():
     assert position.speed == 0.0
 
 
+def test_space_separated_navixy_timestamp_parses():
+    position = parse_state(
+        {
+            "tracker_id": 1,
+            "lat": 1,
+            "lng": 2,
+            "gps": {"updated": "2026-01-01 00:00:00"},
+        }
+    )
+    assert position is not None
+    assert position.timestamp == datetime(2026, 1, 1)
+
+
 def test_invalid_timestamp_falls_through_to_the_next_field():
     position = parse_state(
         {
@@ -139,7 +151,7 @@ def test_invalid_timestamp_falls_through_to_the_next_field():
     )
     assert position is not None
     assert position.timestamp == datetime(
-        2026, 2, 2, 3, 4, 5, tzinfo=timezone.utc
+        2026, 2, 2, 3, 4, 5, tzinfo=UTC
     )
 
 

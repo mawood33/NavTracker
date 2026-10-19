@@ -8,7 +8,6 @@ from app.infrastructure.crypto import build_crypto_handler
 from app.infrastructure.navixy_api import NavixyApiClient
 from app.infrastructure.navixy_ws import NavixyWebSocketClient
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",

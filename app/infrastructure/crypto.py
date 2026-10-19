@@ -1,7 +1,7 @@
 import base64
 import json
-import os
 import logging
+import os
 from pathlib import Path
 
 from cryptography import x509
@@ -128,69 +128,79 @@ class CryptoHandler:
             raise ValueError("mode must be 'pem', 'ssh', or 'fernet'")
 
         self.mode = mode
-        self.public_key = None
-        self.private_key = None
-        self.fernet = None
-        self.fernet_key = None
+        self.public_key: rsa.RSAPublicKey | None = None
+        self.private_key: rsa.RSAPrivateKey | None = None
+        self.fernet: Fernet | None = None
+        self.fernet_key: bytes | None = None
 
         logger.info(f'Crypto mode: {mode}')
         if mode == "fernet":
             if public_key_path or private_key_path:
                 raise ValueError("Fernet mode does not use public/private key paths")
 
-            self.fernet_key = fernet_key_for_mode(mode, fernet_key)
-            self.fernet = Fernet(self.fernet_key)
+            key = fernet_key_for_mode(mode, fernet_key)
+            if key is None:
+                raise RuntimeError(FERNET_KEY_REQUIRED)
+            self.fernet_key = key
+            self.fernet = Fernet(key)
             return
 
         checked_path = require_public_material(mode, public_key_path)
         if checked_path is None:
             raise RuntimeError(f"{mode} mode requires ENCRYPTION_CERT.")
         public_bytes = _read_public_material(mode, checked_path)
+        loaded_public: object
         try:
             if mode == "ssh":
-                self.public_key = serialization.load_ssh_public_key(public_bytes)
+                loaded_public = serialization.load_ssh_public_key(public_bytes)
             elif b"-----BEGIN CERTIFICATE-----" in public_bytes:
-                self.public_key = x509.load_pem_x509_certificate(
+                loaded_public = x509.load_pem_x509_certificate(
                     public_bytes
                 ).public_key()
             else:
-                self.public_key = serialization.load_pem_public_key(public_bytes)
+                loaded_public = serialization.load_pem_public_key(public_bytes)
         except (ValueError, TypeError) as exc:
             raise RuntimeError(
                 f"{mode} mode requires a valid ENCRYPTION_CERT."
             ) from exc
 
-        if not isinstance(self.public_key, rsa.RSAPublicKey):
+        if not isinstance(loaded_public, rsa.RSAPublicKey):
             raise RuntimeError(
                 f"{mode} mode requires a valid ENCRYPTION_CERT."
             )
+        self.public_key = loaded_public
 
         if private_key_path:
             private_bytes = Path(private_key_path).read_bytes()
-
+            loaded_private: object
             if mode == "ssh":
-                self.private_key = serialization.load_ssh_private_key(
+                loaded_private = serialization.load_ssh_private_key(
                     private_bytes,
                     password=private_key_password,
                 )
             else:
-                self.private_key = serialization.load_pem_private_key(
+                loaded_private = serialization.load_pem_private_key(
                     private_bytes,
                     password=private_key_password,
                 )
 
-            if not isinstance(self.private_key, rsa.RSAPrivateKey):
+            if not isinstance(loaded_private, rsa.RSAPrivateKey):
                 raise TypeError("RSA private keys are required for this encryption method")
+            self.private_key = loaded_private
 
     def encrypt(self, message: str) -> str:
         if self.mode == "fernet":
-            token = self.fernet.encrypt(message.encode("utf-8"))
+            fernet = self.fernet
+            if fernet is None:
+                raise ValueError("A Fernet key is not loaded")
+            token = fernet.encrypt(message.encode("utf-8"))
             return json.dumps({
                 "algorithm": "FERNET",
                 "token": token.decode("ascii"),
             })
 
-        if self.public_key is None:
+        public_key = self.public_key
+        if public_key is None:
             raise ValueError("Public key is not loaded")
 
         aes_key = AESGCM.generate_key(bit_length=256)
@@ -199,7 +209,7 @@ class CryptoHandler:
             nonce, message.encode("utf-8"), None
         )
 
-        encrypted_key = self.public_key.encrypt(
+        encrypted_key = public_key.encrypt(
             aes_key,
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -219,16 +229,19 @@ class CryptoHandler:
         payload = json.loads(encrypted_message)
 
         if payload.get("algorithm") == "FERNET":
-            if self.fernet is None:
+            fernet = self.fernet
+            if fernet is None:
                 raise ValueError("A Fernet key is not loaded")
-            return self.fernet.decrypt(
-                payload["token"].encode("ascii")
-            ).decode("utf-8")
+            token = payload.get("token")
+            if not isinstance(token, str):
+                raise ValueError("Fernet payload is missing a token")
+            return fernet.decrypt(token.encode("ascii")).decode("utf-8")
 
-        if self.private_key is None:
+        private_key = self.private_key
+        if private_key is None:
             raise ValueError("Private key is not loaded")
 
-        aes_key = self.private_key.decrypt(
+        aes_key = private_key.decrypt(
             base64.b64decode(payload["encrypted_key"]),
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),

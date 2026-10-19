@@ -1,8 +1,6 @@
 import json
 
 import pytest
-from cryptography.fernet import Fernet
-
 from app.infrastructure.crypto import (
     FERNET_KEY_INVALID,
     FERNET_KEY_REQUIRED,
@@ -10,6 +8,9 @@ from app.infrastructure.crypto import (
     build_crypto_handler,
     parse_fernet_key,
 )
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 def test_parse_treats_blank_and_yaml_none_as_unset():
@@ -83,6 +84,53 @@ def test_fernet_key_for_mode_skips_other_modes():
         fernet_key_for_mode("fernet", None)
     key = Fernet.generate_key()
     assert fernet_key_for_mode("fernet", key) == key
+
+
+def _key_files(tmp_path, mode):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    if mode == "ssh":
+        public = key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH,
+            serialization.PublicFormat.OpenSSH,
+        )
+        private = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    else:
+        public = key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        private = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    public_path = tmp_path / "public"
+    private_path = tmp_path / "private"
+    public_path.write_bytes(public)
+    private_path.write_bytes(private)
+    return public_path, private_path
+
+
+@pytest.mark.parametrize("mode", ["pem", "ssh"])
+def test_pem_and_ssh_round_trip_without_using_a_fernet_key(tmp_path, mode):
+    public_path, private_path = _key_files(tmp_path, mode)
+    handler = build_crypto_handler(
+        encryption_required=True,
+        mode=mode,
+        public_key_path=str(public_path),
+        fernet_key="not-a-key",
+    )
+    opener = CryptoHandler(
+        mode=mode,
+        public_key_path=str(public_path),
+        private_key_path=str(private_path),
+    )
+    assert handler is not None
+    assert opener.decrypt(handler.encrypt("tracker-fix")) == "tracker-fix"
 
 
 def test_build_crypto_handler_skips_crypto_when_encryption_is_off():

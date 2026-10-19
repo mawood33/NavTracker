@@ -1,5 +1,4 @@
 import pytest
-
 from app.application.mode import (
     DEFAULT_BACKOFF_CAP_SECONDS,
     DEFAULT_BACKOFF_INITIAL_SECONDS,

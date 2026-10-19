@@ -1,14 +1,14 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.application.mode import FailoverPolicy, IngestionMode
 from app.application.supervisor import IngestionSupervisor
 from app.domain.entities import TrackerPosition
 from app.domain.errors import SourceConnectionError
 
-T1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-T2 = datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)
+T1 = datetime(2026, 1, 1, tzinfo=UTC)
+T2 = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
 
 
 def _position(tracker_id, timestamp, latitude=1.0):
@@ -25,7 +25,7 @@ class FakeClock:
         self.monotonic_time = 0.0
         self.sleeps = []
         self.now_calls = 0
-        self._now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        self._now = datetime(2026, 6, 1, tzinfo=UTC)
 
     def monotonic(self):
         return self.monotonic_time
@@ -201,6 +201,38 @@ def test_poll_mode_requests_only_configured_tracker_ids():
         await _until(lambda: [item.tracker_id for item in publisher.published] == [1, 3])
         assert stream.called is False
         assert reader.ids[:2] == [1, 3]
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_poll_mode_keeps_polling_after_a_read_error():
+    async def scenario():
+        class FlakyReader:
+            def __init__(self):
+                self.calls = 0
+
+            async def get_position(self, tracker_id):
+                self.calls += 1
+                await asyncio.sleep(0)
+                if self.calls == 1:
+                    raise RuntimeError("navixy 500")
+                return _position(tracker_id, T1)
+
+        reader = FlakyReader()
+        stream = ExplodingStream()
+        publisher = FakePublisher()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[1],
+            mode=IngestionMode.POLL,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: len(publisher.published) == 1)
+        assert stream.called is False
+        assert reader.calls >= 2
         await _shutdown(task)
 
     asyncio.run(scenario())

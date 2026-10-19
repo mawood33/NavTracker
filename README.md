@@ -61,5 +61,9 @@ docker compose up --build
 
 ```bash
 pip install -r requirements-dev.txt
+python -m ruff check .
+python -m mypy
 python -m pytest
 ```
+
+GitHub Actions runs those three commands on every push and pull request.
