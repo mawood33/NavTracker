@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from app.domain.entities import TrackerPosition
+from app.domain.errors import TrackerDiscoveryError
 
 
 def parse_poll_response(payload: Any, tracker_id: int) -> TrackerPosition:
@@ -175,6 +176,42 @@ def _timestamp(value: object) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def parse_tracker_list(payload: object) -> list[int]:
+    """Parse a ``tracker/list`` body into tracker ids.
+
+    ``success: false``, a missing ``list``, or an entry without an integer
+    ``id`` fails the whole response. The message does not include the body.
+    An empty ``list`` is a successful read of no trackers.
+    """
+
+    if not isinstance(payload, dict):
+        raise TrackerDiscoveryError(
+            "Navixy tracker list response is not an object"
+        )
+    if payload.get("success") is False:
+        raise TrackerDiscoveryError(
+            "Navixy tracker list response was not successful"
+        )
+    raw = payload.get("list")
+    if not isinstance(raw, list):
+        raise TrackerDiscoveryError(
+            "Navixy tracker list response has no list"
+        )
+    ids: list[int] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise TrackerDiscoveryError(
+                "Navixy tracker list entry is not an object"
+            )
+        tracker_id = item.get("id")
+        if isinstance(tracker_id, bool) or not isinstance(tracker_id, int):
+            raise TrackerDiscoveryError(
+                "Navixy tracker list entry has no integer id"
+            )
+        ids.append(tracker_id)
+    return list(dict.fromkeys(ids))
 
 
 def _text(value: object) -> str | None:

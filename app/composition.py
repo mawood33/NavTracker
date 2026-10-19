@@ -68,6 +68,10 @@ def build_application(settings: Settings) -> Application:
         mode=settings.navixy_mode,
         poll_interval_seconds=settings.poll_interval_seconds,
         policy=settings.failover,
+        catalog=reader,
+        discovery_interval_seconds=(
+            settings.tracker_discovery_interval_seconds
+        ),
     )
     return Application(
         crypto_handler=crypto_handler,

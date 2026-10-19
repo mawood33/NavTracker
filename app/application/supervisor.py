@@ -5,6 +5,11 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from app.application.discovery import (
+    DEFAULT_DISCOVERY_BACKOFF_CAP_SECONDS,
+    DEFAULT_DISCOVERY_BACKOFF_INITIAL_SECONDS,
+    discovery_backoff_seconds,
+)
 from app.application.mode import FailoverPolicy, IngestionMode
 from app.application.publication import (
     PUBLISH_BACKOFF_CAP_SECONDS,
@@ -13,12 +18,22 @@ from app.application.publication import (
     LatestFixRetry,
 )
 from app.domain.entities import TrackerPosition
-from app.domain.errors import SourceConnectionError
-from app.domain.ports import MessagePublisher, PositionReader, PositionStream
+from app.domain.errors import SourceConnectionError, TrackerDiscoveryError
+from app.domain.ports import (
+    MessagePublisher,
+    PositionReader,
+    PositionStream,
+    PositionSubscription,
+    TrackerCatalog,
+)
 
 logger = logging.getLogger(__name__)
 
 _PUBLISHED_TIMESTAMPS_PER_TRACKER = 256
+
+
+class _ScopeChanged(Exception):
+    """The discovered tracker set changed. Reconnect with the new ids."""
 
 
 class SystemClock:
@@ -60,6 +75,12 @@ class IngestionSupervisor:
         publish_attempts: int = PUBLISH_MAX_ATTEMPTS,
         publish_backoff_initial: float = PUBLISH_BACKOFF_INITIAL_SECONDS,
         publish_backoff_cap: float = PUBLISH_BACKOFF_CAP_SECONDS,
+        catalog: TrackerCatalog | None = None,
+        discovery_interval_seconds: float = 0,
+        discovery_backoff_initial: float = (
+            DEFAULT_DISCOVERY_BACKOFF_INITIAL_SECONDS
+        ),
+        discovery_backoff_cap: float = DEFAULT_DISCOVERY_BACKOFF_CAP_SECONDS,
     ):
         self.reader = reader
         self.stream = stream
@@ -71,8 +92,14 @@ class IngestionSupervisor:
         self.publish_attempts = publish_attempts
         self.publish_backoff_initial = publish_backoff_initial
         self.publish_backoff_cap = publish_backoff_cap
+        self._catalog = catalog
+        self.discovery_interval_seconds = discovery_interval_seconds
+        self._discovery_backoff_initial = discovery_backoff_initial
+        self._discovery_backoff_cap = discovery_backoff_cap
         self._ordered_ids = tuple(dict.fromkeys(tracker_ids))
         self._scope = set(self._ordered_ids)
+        self._uses_discovery = catalog is not None and not self._ordered_ids
+        self._scope_changed = asyncio.Event()
         self._lock = asyncio.Lock()
         self._last_received_at: dict[int, datetime] = {}
         self._published: dict[int, set[datetime]] = {}
@@ -92,14 +119,27 @@ class IngestionSupervisor:
             self._outbox.run(),
             name="publish-retry",
         )
+        discover_task: asyncio.Task[None] | None = None
         try:
+            if self._uses_discovery:
+                await self._load_discovered_scope()
+                if self.discovery_interval_seconds > 0:
+                    discover_task = asyncio.create_task(
+                        self._rediscover_loop(),
+                        name="tracker-discovery",
+                    )
             await self._run_modes()
         finally:
+            if discover_task is not None:
+                discover_task.cancel()
             retry_task.cancel()
-            await asyncio.gather(retry_task, return_exceptions=True)
+            pending = [retry_task]
+            if discover_task is not None:
+                pending.append(discover_task)
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _run_modes(self) -> None:
-        if not self._ordered_ids:
+        if not self._ordered_ids and not self._uses_discovery:
             logger.warning(
                 "No tracker ids configured; Navixy ingestion is idle "
                 "and will not subscribe to every tracker"
@@ -123,6 +163,9 @@ class IngestionSupervisor:
         )
         failures = 0
         while True:
+            if not self._ordered_ids:
+                await self._wait_for_trackers()
+                continue
             if failures >= self.policy.max_attempts:
                 logger.warning(
                     "Ingestion mode switch: websocket -> poll after %s "
@@ -153,6 +196,12 @@ class IngestionSupervisor:
                     failures = 0
 
                 await self._consume_session(on_established=established)
+            except _ScopeChanged:
+                logger.info(
+                    "Navixy websocket resubscribing tracker_ids=%s",
+                    list(self._ordered_ids),
+                )
+                continue
             except SourceConnectionError as exc:
                 failures += 1
                 logger.warning(
@@ -210,6 +259,8 @@ class IngestionSupervisor:
             logger.info("Probing Navixy websocket while polling")
             try:
                 await self._consume_session(on_healthy=on_healthy)
+            except _ScopeChanged:
+                continue
             except SourceConnectionError as exc:
                 if stop_poll.is_set():
                     logger.warning(
@@ -253,6 +304,8 @@ class IngestionSupervisor:
         on_established: Callable[[], None] | None = None,
         on_healthy: Callable[[], None] | None = None,
     ) -> None:
+        if not self._ordered_ids:
+            raise _ScopeChanged()
         session = await self.stream.connect(list(self._ordered_ids))
         try:
             if on_established is not None:
@@ -260,7 +313,7 @@ class IngestionSupervisor:
             started = self.clock.monotonic()
             notified = False
             while True:
-                item = await session.receive()
+                item = await self._next_item(session)
                 if (
                     on_healthy is not None
                     and not notified
@@ -277,6 +330,146 @@ class IngestionSupervisor:
                 )
         finally:
             await session.close()
+
+    async def _load_discovered_scope(self) -> None:
+        attempt = 0
+        while True:
+            try:
+                ids = await self._read_catalog()
+            except TrackerDiscoveryError as exc:
+                attempt += 1
+                delay = discovery_backoff_seconds(
+                    attempt,
+                    initial=self._discovery_backoff_initial,
+                    cap=self._discovery_backoff_cap,
+                )
+                logger.warning(
+                    "Navixy tracker discovery failed attempt=%s; "
+                    "retrying in %.1fs: %s",
+                    attempt,
+                    delay,
+                    exc,
+                )
+                await self.clock.sleep(delay)
+                continue
+            self._replace_scope(ids)
+            if not ids:
+                logger.warning(
+                    "Navixy tracker list is empty; ingestion is idle "
+                    "and will not subscribe to every tracker"
+                )
+                if self.discovery_interval_seconds <= 0:
+                    while True:
+                        await self.clock.sleep(3600)
+                return
+            logger.info(
+                "Discovered Navixy tracker_ids=%s",
+                list(self._ordered_ids),
+            )
+            return
+
+    async def _rediscover_loop(self) -> None:
+        while True:
+            await self.clock.sleep(self.discovery_interval_seconds)
+            try:
+                ids = await self._read_catalog()
+            except TrackerDiscoveryError as exc:
+                logger.warning(
+                    "Navixy tracker re-discovery failed; "
+                    "keeping tracker_ids=%s: %s",
+                    list(self._ordered_ids),
+                    exc,
+                )
+                continue
+            fresh = tuple(dict.fromkeys(ids))
+            if fresh == self._ordered_ids:
+                continue
+            added = [tracker_id for tracker_id in fresh if tracker_id not in self._scope]
+            removed = [
+                tracker_id
+                for tracker_id in self._ordered_ids
+                if tracker_id not in set(fresh)
+            ]
+            self._replace_scope(list(fresh))
+            logger.info(
+                "Navixy tracker list changed added=%s removed=%s "
+                "tracker_ids=%s",
+                added,
+                removed,
+                list(self._ordered_ids),
+            )
+            self._scope_changed.set()
+
+    async def _read_catalog(self) -> list[int]:
+        catalog = self._catalog
+        if catalog is None:
+            raise TrackerDiscoveryError(
+                "Navixy tracker list request failed"
+            )
+        try:
+            ids = await catalog.list_tracker_ids()
+        except asyncio.CancelledError:
+            raise
+        except TrackerDiscoveryError:
+            raise
+        except Exception as exc:
+            raise TrackerDiscoveryError(
+                "Navixy tracker list request failed"
+            ) from exc
+        invalid_id = any(
+            isinstance(tracker_id, bool) or not isinstance(tracker_id, int)
+            for tracker_id in ids
+        )
+        if invalid_id:
+            raise TrackerDiscoveryError(
+                "Navixy tracker list did not return integer ids"
+            )
+        return list(ids)
+
+    def _replace_scope(self, tracker_ids: list[int]) -> None:
+        self._ordered_ids = tuple(dict.fromkeys(tracker_ids))
+        self._scope = set(self._ordered_ids)
+
+    async def _wait_for_trackers(self) -> None:
+        if self.discovery_interval_seconds <= 0:
+            while not self._ordered_ids:
+                await self.clock.sleep(3600)
+            return
+        await self._scope_changed.wait()
+        self._scope_changed.clear()
+
+    async def _next_item(
+        self,
+        session: PositionSubscription,
+    ) -> TrackerPosition | None:
+        receive_task = asyncio.create_task(session.receive())
+        change_task = asyncio.create_task(self._scope_changed.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {receive_task, change_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            receive_task.cancel()
+            change_task.cancel()
+            await asyncio.gather(
+                receive_task,
+                change_task,
+                return_exceptions=True,
+            )
+            raise
+        for task in (receive_task, change_task):
+            if task not in done:
+                task.cancel()
+        await asyncio.gather(
+            receive_task,
+            change_task,
+            return_exceptions=True,
+        )
+        if self._scope_changed.is_set():
+            self._scope_changed.clear()
+            raise _ScopeChanged()
+        return receive_task.result()
 
     async def _publish_isolated(
         self,

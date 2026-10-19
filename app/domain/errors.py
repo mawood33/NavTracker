@@ -6,6 +6,15 @@ class SourceConnectionError(Exception):
     """
 
 
+class TrackerDiscoveryError(Exception):
+    """The Navixy tracker list could not be read.
+
+    This is not a socket failure and must not count toward websocket
+    failover. Callers retry discovery. They must not subscribe to every
+    tracker in its place.
+    """
+
+
 class PublicationError(Exception):
     """A tracker fix could not be published.
 
