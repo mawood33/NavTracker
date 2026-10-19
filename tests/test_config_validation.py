@@ -158,3 +158,15 @@ def test_cli_reports_an_unknown_environment(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("APP_ENV=qa setting=APP_ENV:")
+
+
+def test_cli_emits_a_github_warning_for_the_environment_and_setting(
+    monkeypatch, capsys
+):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert main(["qa"]) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("APP_ENV=qa setting=APP_ENV:")
+    assert captured.out.startswith("::warning ")
+    assert "title=APP_ENV=qa setting=APP_ENV::" in captured.out
+    assert "APP_ENV=qa setting=APP_ENV:" in captured.out

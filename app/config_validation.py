@@ -2,7 +2,8 @@
 
 Loads ``config/<APP_ENV>.yaml``, validates settings, and constructs the
 supervisor, Navixy ports, crypto handler, and ChatSurfer publisher. It does
-not open a socket or send a request.
+not open a socket or send a request. In GitHub Actions a failure prints a
+``::warning`` annotation and the config job does not fail the workflow.
 
 API keys are dummies. Crypto material is a dummy for the mode declared in
 that file: a PEM or SSH public key when encryption is on, or a Fernet key
@@ -130,11 +131,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate_environment(environment)
         except ConfigValidationError as exc:
             print(exc, file=sys.stderr)
+            _emit_github_warning(exc)
             ok = False
     if ok:
         print("Config startup check passed: " + ", ".join(requested))
         return 0
     return 1
+
+
+def _emit_github_warning(exc: ConfigValidationError) -> None:
+    """Print a warning annotation. Local runs stay on stderr and exit 1."""
+
+    if os.getenv("GITHUB_ACTIONS") != "true":
+        return
+    title = _escape_workflow_property(
+        f"APP_ENV={exc.environment} setting={exc.setting}"
+    )
+    message = _escape_workflow_message(str(exc))
+    print(f"::warning title={title}::{message}", flush=True)
+
+
+def _escape_workflow_property(value: str) -> str:
+    return (
+        value.replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(":", "%3A")
+        .replace(",", "%2C")
+    )
+
+
+def _escape_workflow_message(value: str) -> str:
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def _failure(environment: str, exc: BaseException) -> ConfigValidationError:

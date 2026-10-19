@@ -66,11 +66,11 @@ python -m mypy
 python -m pytest
 ```
 
-GitHub Actions runs those three commands on every push and pull request. A separate job loads each environment config, validates settings, and constructs the process objects. Run that check locally from the repository root:
+GitHub Actions runs those three commands on every push and pull request, and a failure there fails the workflow. A separate config job loads each environment, validates settings, and constructs the process objects. That job is warning-only: on failure it emits a GitHub Actions warning naming the environment and setting, and it does not fail the workflow or block merges. Run the check locally from the repository root:
 
 ```bash
 python scripts/validate_config.py
 python scripts/validate_config.py development
 ```
 
-The check uses `config/development.yaml`, `config/staging.yaml`, and `config/production.yaml`. API keys and the key material for the crypto mode in that file are dummies. The ChatSurfer client certificate is a local dummy pair, so `/data/certs` is not read. It does not open a Navixy or ChatSurfer connection. An invalid setting fails with `APP_ENV=<environment> setting=<NAME>: ...`.
+The check uses `config/development.yaml`, `config/staging.yaml`, and `config/production.yaml`. API keys and the key material for the crypto mode in that file are dummies. The ChatSurfer client certificate is a local dummy pair, so `/data/certs` is not read. It does not open a Navixy or ChatSurfer connection. An invalid setting exits locally with `APP_ENV=<environment> setting=<NAME>: ...`. In GitHub Actions the same line is a `::warning` annotation.
