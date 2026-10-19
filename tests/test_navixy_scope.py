@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -126,14 +127,50 @@ def test_connect_refuses_empty_tracker_ids(monkeypatch):
     assert called is False
 
 
-def test_receive_turns_socket_errors_into_source_errors():
+def test_receive_logs_socket_exception_with_context(caplog):
+    caplog.set_level(logging.ERROR)
+
     class BrokenSocket:
         async def recv(self):
-            raise ConnectionError("reset")
+            raise ConnectionError("reset by peer")
 
         async def close(self):
             return None
 
-    subscription = NavixySubscription(BrokenSocket(), {1}, idle_timeout=1)
+    subscription = NavixySubscription(
+        BrokenSocket(),
+        {1, 3},
+        idle_timeout=1,
+        ws_url="wss://ws.example.test/events",
+    )
     with pytest.raises(SourceConnectionError, match="receive failed"):
         asyncio.run(subscription.receive())
+
+    text = caplog.text
+    assert "Navixy websocket receive failed" in text
+    assert "url=wss://ws.example.test/events" in text
+    assert "tracker_ids=[1, 3]" in text
+    assert "reset by peer" in text
+    assert "ConnectionError" in text
+
+
+def test_connect_logs_socket_exception_with_context(caplog, monkeypatch):
+    caplog.set_level(logging.ERROR)
+
+    async def fake_connect(url):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(
+        "app.infrastructure.navixy_ws.websockets.connect",
+        fake_connect,
+    )
+    client = NavixyWebSocketClient("wss://ws.example.test/events", "hash-1")
+    with pytest.raises(SourceConnectionError, match="connection failed"):
+        asyncio.run(client.connect([8, 2]))
+
+    text = caplog.text
+    assert "Navixy websocket connection failed" in text
+    assert "url=wss://ws.example.test/events" in text
+    assert "tracker_ids=[2, 8]" in text
+    assert "connection refused" in text
+    assert "hash-1" not in text

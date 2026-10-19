@@ -116,12 +116,14 @@ class ScriptedStream:
     def __init__(self, sessions):
         self._sessions = list(sessions)
         self.requested = []
+        self.opened = []
 
     async def connect(self, tracker_ids):
         self.requested.append(list(tracker_ids))
         item = self._sessions.pop(0)
         if isinstance(item, BaseException):
             raise item
+        self.opened.append(item)
         return item
 
 
@@ -317,12 +319,14 @@ def test_publish_errors_do_not_count_toward_failover():
             publisher=publisher,
             tracker_ids=[4],
             policy=_policy(max_attempts=2),
+            publish_attempts=1,
         )
         task = asyncio.create_task(supervisor.run())
         await asyncio.wait_for(parked.wait(), timeout=1)
         assert publisher.attempts == 3
         assert publisher.published == []
         assert reader.ids == []
+        assert stream.requested == [[4], [4]]
         await _shutdown(task)
 
     asyncio.run(scenario())
@@ -443,6 +447,97 @@ def test_dedupes_tracker_id_and_timestamp_across_failover(caplog):
         assert clock.now_calls == 0
         assert "Polling resumes from last received fix" in caplog.text
         assert T1.isoformat() in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_websocket_publish_failure_retries_without_reconnecting(caplog):
+    async def scenario():
+        caplog.set_level(logging.WARNING)
+        parked = asyncio.Event()
+        reader = RecordingReader(lambda tracker_id: _position(tracker_id, T1))
+        session = ScriptedSession([_position(4, T1)], parked=parked)
+        stream = ScriptedStream([session])
+        publisher = FakePublisher(fail_times=1)
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[4],
+            clock=FakeClock(),
+            publish_attempts=3,
+            publish_backoff_initial=0,
+            publish_backoff_cap=0,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(
+            lambda: len(publisher.published) == 1 and parked.is_set()
+        )
+        assert publisher.attempts == 2
+        assert stream.requested == [[4]]
+        assert session.closed is False
+        assert reader.ids == []
+        assert "Navixy websocket failure" not in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_websocket_publish_failure_is_dropped_without_failover(caplog):
+    async def scenario():
+        caplog.set_level(logging.ERROR)
+        parked = asyncio.Event()
+        reader = RecordingReader(lambda tracker_id: _position(tracker_id, T2))
+        session = ScriptedSession([_position(4, T1)], parked=parked)
+        stream = ScriptedStream([session])
+        publisher = FakePublisher(fail_times=10)
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[4],
+            clock=FakeClock(),
+            publish_attempts=3,
+            publish_backoff_initial=0,
+            publish_backoff_cap=0,
+            policy=_policy(max_attempts=2),
+        )
+        task = asyncio.create_task(supervisor.run())
+        await asyncio.wait_for(parked.wait(), timeout=1)
+        await _until(lambda: "Dropping unpublished fix" in caplog.text)
+        assert publisher.attempts == 3
+        assert publisher.published == []
+        assert stream.requested == [[4]]
+        assert session.closed is False
+        assert reader.ids == []
+        assert "tracker_id=4" in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_poll_publish_failure_does_not_open_the_websocket(caplog):
+    async def scenario():
+        caplog.set_level(logging.ERROR)
+        reader = RecordingReader(lambda tracker_id: _position(tracker_id, T1))
+        stream = ExplodingStream()
+        publisher = FakePublisher(fail_times=10)
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[1, 2],
+            mode=IngestionMode.POLL,
+            clock=FakeClock(),
+            publish_attempts=1,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: len(reader.ids) >= 3)
+        assert stream.called is False
+        assert reader.ids[:2] == [1, 2]
+        assert "Dropping unpublished fix" in caplog.text
+        assert publisher.published == []
         await _shutdown(task)
 
     asyncio.run(scenario())

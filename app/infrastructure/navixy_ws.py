@@ -65,6 +65,28 @@ def parse_event(event: dict[str, Any]) -> TrackerPosition | None:
     )
 
 
+def _log_socket_failure(
+    operation: str,
+    ws_url: str,
+    tracker_ids: list[int] | set[int],
+    exc: BaseException,
+) -> None:
+    """Log a Navixy socket failure with context and its traceback.
+
+    ``stream_positions`` used to swallow these and sleep. The supervisor
+    reconnects only when ``SourceConnectionError`` is raised, so the
+    exception has to be visible here first.
+    """
+
+    logger.exception(
+        "Navixy websocket %s failed url=%s tracker_ids=%s error=%s",
+        operation,
+        ws_url,
+        sorted(tracker_ids),
+        exc,
+    )
+
+
 def position_in_scope(
     event: dict[str, Any],
     tracker_ids: set[int],
@@ -98,6 +120,12 @@ class NavixyWebSocketClient:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            _log_socket_failure(
+                "connection",
+                self.ws_url,
+                tracker_ids,
+                exc,
+            )
             raise SourceConnectionError(
                 f"Navixy websocket connection failed: {exc}"
             ) from exc
@@ -106,6 +134,7 @@ class NavixyWebSocketClient:
             socket,
             set(tracker_ids),
             idle_timeout=self.idle_timeout,
+            ws_url=self.ws_url,
         )
         try:
             await socket.send(
@@ -118,6 +147,12 @@ class NavixyWebSocketClient:
             raise
         except Exception as exc:
             await subscription.close()
+            _log_socket_failure(
+                "subscribe",
+                self.ws_url,
+                tracker_ids,
+                exc,
+            )
             raise SourceConnectionError(
                 f"Navixy websocket subscribe failed: {exc}"
             ) from exc
@@ -135,10 +170,12 @@ class NavixySubscription:
         socket: Any,
         tracker_ids: set[int],
         idle_timeout: float,
+        ws_url: str = "",
     ):
         self._socket = socket
         self._tracker_ids = tracker_ids
         self._idle_timeout = idle_timeout
+        self._ws_url = ws_url
         self._pending: asyncio.Task[Any] | None = None
 
     async def receive(self) -> TrackerPosition | None:
@@ -157,6 +194,12 @@ class NavixySubscription:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            _log_socket_failure(
+                "receive",
+                self._ws_url,
+                self._tracker_ids,
+                exc,
+            )
             raise SourceConnectionError(
                 f"Navixy websocket receive failed: {exc}"
             ) from exc
