@@ -77,7 +77,7 @@ The check uses `config/development.yaml`, `config/staging.yaml`, and `config/pro
 
 ## Rollback and emergency operation
 
-Redeploy the image or tag built from `91265630ea2f0e21e6975936e15abb5de2da3775`. That is the last `master` commit before the ingestion refactor.
+Redeploy the image built from the annotated tag `pre-ddd-refactor` (`91265630ea2f0e21e6975936e15abb5de2da3775`). That tag is the last `master` commit before the ingestion refactor.
 
 To undo the merged stack in git, revert these merge commits newest first. `-m 1` keeps `master` as the mainline:
 
