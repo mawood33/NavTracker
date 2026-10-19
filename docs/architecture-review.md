@@ -217,7 +217,7 @@ Current behavior, traced through the loops:
 | Navixy HTTP or parse error for one tracker | Logged, other trackers continue, no backoff | n/a |
 | WebSocket disconnect or any exception in the client loop | n/a | Sleep 5 seconds inside the client, no log. The service's own "disconnected" log does not run for those errors |
 | ChatSurfer HTTP error, encryption error, or oversize message | Logged per tracker, position dropped, loop continues | The exception leaves the `async for`, the service logs "Navixy WebSocket disconnected", sleeps 5 seconds, and opens a new Navixy session |
-| Bad `TRACKER_SOURCE_MODE` such as `ws` | Treated as poll. Only the exact string `websocket` selects streaming | |
+| Bad `NAVIXY_MODE` such as `ws` | Treated as poll. Only the exact string `websocket` selects streaming | |
 | Missing `NAVIXY_API_KEY` or `CHAT_SURFER_API_KEY` | `RuntimeError` at startup. Clear | |
 | `FERNET_KEY` unset | Startup succeeds. YAML value `"None"` satisfies `_env` | |
 | Fernet mode | New random key every process start. Published tokens cannot be decrypted with the configured key | |

@@ -88,6 +88,7 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
     chatsurfer = config.get("chatsurfer", {})
     crypto = config.get("crypto", {})
     
+<<<<<<< Updated upstream
     raw_tracker_ids = _env(
         "TRACKER_IDS",
         ",".join(map(str, navixy.get("tracker_ids", []))),
@@ -105,6 +106,16 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
                 f"{raw_tracker_ids!r}. Expected comma-separated integers."
             ) from None
     _reject_legacy_source_mode(navixy)
+=======
+    tracker_ids = [
+        int(item.strip())
+        for item in _env(
+            "TRACKER_IDS",
+            ",".join(map(str, navixy.get("tracker_ids", []))),
+        ).split(",")
+        if item.strip()
+    ]
+>>>>>>> Stashed changes
     navixy_mode = resolve_navixy_mode(
         os.getenv("NAVIXY_MODE"),
         navixy.get("mode"),
@@ -275,22 +286,3 @@ def _pick(env_name: str, yaml_value: object, default: object) -> object:
     if yaml_value is not None:
         return yaml_value
     return default
-
-
-def _reject_legacy_source_mode(navixy: dict) -> None:
-    env_mode = os.getenv("NAVIXY_MODE")
-    env_mode_set = env_mode is not None and env_mode.strip() != ""
-    if os.getenv("TRACKER_SOURCE_MODE") and not env_mode_set:
-        raise RuntimeError(
-            "TRACKER_SOURCE_MODE is no longer supported. "
-            "Set NAVIXY_MODE to 'websocket' or 'poll'."
-        )
-    if (
-        "source_mode" in navixy
-        and "mode" not in navixy
-        and not env_mode_set
-    ):
-        raise RuntimeError(
-            "navixy.source_mode is no longer supported. "
-            "Set navixy.mode or NAVIXY_MODE to 'websocket' or 'poll'."
-        )

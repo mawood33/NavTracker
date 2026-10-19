@@ -10,7 +10,6 @@ from cryptography.fernet import Fernet
 _SETTINGS_ENV = (
     "APP_ENV",
     "NAVIXY_MODE",
-    "TRACKER_SOURCE_MODE",
     "TRACKER_IDS",
     "NAVIXY_BASE_URL",
     "NAVIXY_WS_URL",
@@ -39,9 +38,6 @@ _SETTINGS_ENV = (
     "MODE",
     "FERNET_KEY",
 )
-
-# Every name load_settings reads, including the removed legacy variable.
-_DOCUMENTED_SETTINGS = _SETTINGS_ENV + ("TRACKER_SOURCE_MODE",)
 
 
 def _scrub(monkeypatch):

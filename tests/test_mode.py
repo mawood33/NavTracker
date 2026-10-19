@@ -71,7 +71,6 @@ def test_failover_defaults_and_rejection():
 def _scrub_env(monkeypatch):
     for name in (
         "NAVIXY_MODE",
-        "TRACKER_SOURCE_MODE",
         "TRACKER_IDS",
         "NAVIXY_FAILOVER_MAX_ATTEMPTS",
         "NAVIXY_FAILOVER_BACKOFF_INITIAL_SECONDS",
@@ -131,10 +130,3 @@ def test_load_settings_defaults_to_websocket_when_mode_omitted(
     monkeypatch.chdir(tmp_path)
     settings = load_settings()
     assert settings.navixy_mode is IngestionMode.WEBSOCKET
-
-
-def test_load_settings_rejects_legacy_source_mode(monkeypatch):
-    _scrub_env(monkeypatch)
-    monkeypatch.setenv("TRACKER_SOURCE_MODE", "poll")
-    with pytest.raises(RuntimeError, match="TRACKER_SOURCE_MODE"):
-        load_settings()
