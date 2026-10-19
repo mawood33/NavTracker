@@ -55,9 +55,27 @@ def _env(name: str, default: str | None = None) -> str:
     return value
 
 
-def load_settings() -> Settings:
+def _int_setting(name: str, value: str) -> int:
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"Invalid {name}={value!r}. Expected an integer."
+        ) from None
+
+
+def _float_setting(name: str, value: str) -> float:
+    try:
+        return float(value.strip())
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"Invalid {name}={value!r}. Expected a number."
+        ) from None
+
+
+def load_settings(config_dir: str | Path = "config") -> Settings:
     environment = os.getenv("APP_ENV", "development")
-    config_path = Path(f"config/{environment}.yaml")
+    config_path = Path(config_dir) / f"{environment}.yaml"
     if not config_path.is_file():
         raise RuntimeError(
             f"APP_ENV='{environment}' has no config file at {config_path}. "
@@ -70,14 +88,22 @@ def load_settings() -> Settings:
     chatsurfer = config.get("chatsurfer", {})
     crypto = config.get("crypto", {})
     
-    tracker_ids = [
-        int(item.strip())
-        for item in _env(
-            "TRACKER_IDS",
-            ",".join(map(str, navixy.get("tracker_ids", []))),
-        ).split(",")
-        if item.strip()
-    ]
+    raw_tracker_ids = _env(
+        "TRACKER_IDS",
+        ",".join(map(str, navixy.get("tracker_ids", []))),
+    )
+    tracker_ids: list[int] = []
+    for item in raw_tracker_ids.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        try:
+            tracker_ids.append(int(token))
+        except ValueError:
+            raise RuntimeError(
+                "Invalid TRACKER_IDS="
+                f"{raw_tracker_ids!r}. Expected comma-separated integers."
+            ) from None
     _reject_legacy_source_mode(navixy)
     navixy_mode = resolve_navixy_mode(
         os.getenv("NAVIXY_MODE"),
@@ -131,11 +157,12 @@ def load_settings() -> Settings:
         ),
         tracker_ids=tracker_ids,
         navixy_mode=navixy_mode,
-        poll_interval_seconds=int(
+        poll_interval_seconds=_int_setting(
+            "POLL_INTERVAL_SECONDS",
             _env(
                 "POLL_INTERVAL_SECONDS",
                 str(navixy.get("poll_interval_seconds", 30)),
-            )
+            ),
         ),
         chatsurfer_base_url=_env(
             "CHAT_SURFER_BASE_URL",
@@ -183,17 +210,19 @@ def load_settings() -> Settings:
                 "/data/certs/client/tls.key",
             ),
         ),
-        chatsurfer_rate_limit=float(
+        chatsurfer_rate_limit=_float_setting(
+            "CHAT_SURFER_RATE_LIMIT",
             _env(
                 "CHAT_SURFER_RATE_LIMIT",
                 str(chatsurfer.get("rate_limit", 60)),
-            )
+            ),
         ),
-        chatsurfer_max_message_size=int(
+        chatsurfer_max_message_size=_int_setting(
+            "CHAT_SURFER_MAX_MESSAGE_SIZE",
             _env(
                 "CHAT_SURFER_MAX_MESSAGE_SIZE",
                 str(chatsurfer.get("max_message_size", 4000)),
-            )
+            ),
         ),
         chatsurfer_encryption_required=(
             _env(

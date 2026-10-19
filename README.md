@@ -66,4 +66,28 @@ python -m mypy
 python -m pytest
 ```
 
-GitHub Actions runs those three commands on every push and pull request.
+GitHub Actions runs those three commands on every push and pull request, and a failure there fails the workflow. A separate config job loads each environment, validates settings, and constructs the process objects. That job is warning-only: on failure it emits a GitHub Actions warning naming the environment and setting, and it does not fail the workflow or block merges. Run the check locally from the repository root:
+
+```bash
+python scripts/validate_config.py
+python scripts/validate_config.py development
+```
+
+The check uses `config/development.yaml`, `config/staging.yaml`, and `config/production.yaml`. API keys and the key material for the crypto mode in that file are dummies. The ChatSurfer client certificate is a local dummy pair, so `/data/certs` is not read. It does not open a Navixy or ChatSurfer connection. An invalid setting exits locally with `APP_ENV=<environment> setting=<NAME>: ...`. In GitHub Actions the same line is a `::warning` annotation.
+
+## Rollback and emergency operation
+
+Redeploy the image built from the annotated tag `pre-ddd-refactor` (`91265630ea2f0e21e6975936e15abb5de2da3775`). That tag is the last `master` commit before the ingestion refactor.
+
+To undo the merged stack in git, revert these merge commits newest first. `-m 1` keeps `master` as the mainline:
+
+```bash
+git revert -m 1 7d37b10a602e22df857de77888999effe66e7358
+git revert -m 1 ee9338f066926891d3b14301105d4c1786dcf166
+git revert -m 1 1b30015013aaf7d82eaf55f56c9d0561f5c12640
+git revert -m 1 55f3aa72eb64b255d740bb34b8d9409fcffb0cb6
+git revert -m 1 2bb4b123f7a26e2492ae01618a22128e965cd367
+git revert -m 1 706e447a6d8ca231507c0bfc3dd78997aba01a92
+```
+
+To force polling, set `NAVIXY_MODE=poll` in the process environment (in `.env` when using Docker Compose) and restart. The variable overrides `navixy.mode` in the YAML, the websocket is not opened, and failover stays off. The running process does not reload it. Unset the variable and restart to follow the YAML mode again.

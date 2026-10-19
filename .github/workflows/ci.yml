@@ -22,3 +22,24 @@ jobs:
         run: python -m mypy
       - name: Test
         run: python -m pytest
+
+  config:
+    name: config (${{ matrix.app_env }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        app_env: [development, staging, production]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Validate startup
+        continue-on-error: true
+        run: python scripts/validate_config.py ${{ matrix.app_env }}
