@@ -1,7 +1,10 @@
+import asyncio
+
 import httpx
 
 from app.domain.entities import TrackerPosition
-from app.infrastructure.navixy_parse import parse_poll_response
+from app.domain.errors import TrackerDiscoveryError
+from app.infrastructure.navixy_parse import parse_poll_response, parse_tracker_list
 
 
 class NavixyApiClient:
@@ -36,3 +39,21 @@ class NavixyApiClient:
         response.raise_for_status()
 
         return parse_poll_response(response.json(), tracker_id)
+
+    async def list_tracker_ids(self) -> list[int]:
+        """Read tracker ids from ``tracker/list``. Does not subscribe."""
+
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/tracker/list",
+                json={"hash": self.api_key},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise TrackerDiscoveryError(
+                "Navixy tracker list request failed"
+            ) from exc
+        return parse_tracker_list(payload)

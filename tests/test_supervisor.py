@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from app.application.mode import FailoverPolicy, IngestionMode
 from app.application.supervisor import IngestionSupervisor
 from app.domain.entities import TrackerPosition
-from app.domain.errors import SourceConnectionError
+from app.domain.errors import SourceConnectionError, TrackerDiscoveryError
 
 T1 = datetime(2026, 1, 1, tzinfo=UTC)
 T2 = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
@@ -570,6 +570,174 @@ def test_poll_publish_failure_does_not_open_the_websocket(caplog):
         assert reader.ids[:2] == [1, 2]
         assert "Dropping unpublished fix" in caplog.text
         assert publisher.published == []
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+class ScriptedCatalog:
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = 0
+
+    async def list_tracker_ids(self):
+        self.calls += 1
+        item = self.script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return list(item)
+
+
+class HoldSession:
+    def __init__(self):
+        self.closed = False
+
+    async def receive(self):
+        await asyncio.Event().wait()
+
+    async def close(self):
+        self.closed = True
+
+
+class HoldStream:
+    def __init__(self):
+        self.requested = []
+
+    async def connect(self, tracker_ids):
+        self.requested.append(list(tracker_ids))
+        if not tracker_ids:
+            raise AssertionError("refusing an empty subscription")
+        return HoldSession()
+
+
+def test_configured_tracker_ids_skip_discovery():
+    async def scenario():
+        class BoomCatalog:
+            async def list_tracker_ids(self):
+                raise AssertionError("catalog must not be called")
+
+        reader = RecordingReader(lambda tracker_id: _position(tracker_id, T1))
+        stream = ExplodingStream()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            tracker_ids=[8],
+            mode=IngestionMode.POLL,
+            catalog=BoomCatalog(),
+            discovery_interval_seconds=5,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: reader.ids[:1] == [8])
+        assert stream.called is False
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_empty_scope_discovers_ids_for_polling(caplog):
+    async def scenario():
+        caplog.set_level(logging.INFO)
+        clock = FakeClock()
+        catalog = ScriptedCatalog(
+            [
+                TrackerDiscoveryError("down"),
+                TrackerDiscoveryError("down"),
+                [3],
+            ]
+        )
+        reader = RecordingReader(lambda tracker_id: _position(tracker_id, T1))
+        stream = ExplodingStream()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            tracker_ids=[],
+            mode=IngestionMode.POLL,
+            catalog=catalog,
+            discovery_interval_seconds=0,
+            clock=clock,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: reader.ids[:1] == [3])
+        assert stream.called is False
+        assert clock.sleeps[:2] == [1.0, 2.0]
+        assert "discovery failed attempt=1" in caplog.text
+        assert "discovery failed attempt=2" in caplog.text
+        assert "Discovered Navixy tracker_ids=[3]" in caplog.text
+        assert "subscribe to every tracker" not in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_empty_discovery_does_not_subscribe_to_every_tracker(caplog):
+    async def scenario():
+        caplog.set_level(logging.WARNING)
+        catalog = ScriptedCatalog([[]])
+        stream = ExplodingStream()
+        supervisor = _supervisor(
+            reader=RecordingReader(lambda tracker_id: _position(tracker_id, T1)),
+            stream=stream,
+            tracker_ids=[],
+            mode=IngestionMode.WEBSOCKET,
+            catalog=catalog,
+            discovery_interval_seconds=0,
+        )
+        task = asyncio.create_task(supervisor.run())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert stream.called is False
+        assert catalog.calls == 1
+        assert "will not subscribe to every tracker" in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_rediscovery_adds_a_tracker_for_polling(caplog):
+    async def scenario():
+        caplog.set_level(logging.INFO)
+        catalog = ScriptedCatalog([[1], TrackerDiscoveryError("later"), [1, 2]])
+        reader = RecordingReader(lambda tracker_id: _position(tracker_id, T1))
+        stream = ExplodingStream()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            tracker_ids=[],
+            mode=IngestionMode.POLL,
+            catalog=catalog,
+            discovery_interval_seconds=5,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: 2 in reader.ids)
+        assert stream.called is False
+        assert reader.ids[0] == 1
+        assert "re-discovery failed" in caplog.text
+        assert "keeping tracker_ids=[1]" in caplog.text
+        assert "added=[2]" in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_rediscovery_resubscribes_without_a_socket_failure(caplog):
+    async def scenario():
+        caplog.set_level(logging.INFO)
+        catalog = ScriptedCatalog([[4], [4, 9], [4, 9], [4, 9], [4, 9]])
+        stream = HoldStream()
+        supervisor = _supervisor(
+            reader=RecordingReader(lambda tracker_id: _position(tracker_id, T1)),
+            stream=stream,
+            tracker_ids=[],
+            mode=IngestionMode.WEBSOCKET,
+            catalog=catalog,
+            discovery_interval_seconds=5,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: [4, 9] in stream.requested)
+        assert stream.requested[0] == [4]
+        assert "Navixy websocket failure" not in caplog.text
+        assert "subscribe to every tracker" not in caplog.text
+        assert "resubscribing tracker_ids=[4, 9]" in caplog.text
         await _shutdown(task)
 
     asyncio.run(scenario())

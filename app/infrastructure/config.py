@@ -4,6 +4,10 @@ from pathlib import Path
 
 import yaml
 
+from app.application.discovery import (
+    DEFAULT_DISCOVERY_INTERVAL_SECONDS,
+    parse_discovery_interval,
+)
 from app.application.mode import (
     DEFAULT_BACKOFF_CAP_SECONDS,
     DEFAULT_BACKOFF_INITIAL_SECONDS,
@@ -28,6 +32,7 @@ class Settings:
     navixy_mode: IngestionMode
     poll_interval_seconds: int
     failover: FailoverPolicy
+    tracker_discovery_interval_seconds: float
 
     chatsurfer_base_url: str
     chatsurfer_api_key: str
@@ -238,6 +243,13 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
         mode=crypto_mode,
         fernet_key=fernet_key,
         failover=failover,
+        tracker_discovery_interval_seconds=parse_discovery_interval(
+            _pick(
+                "NAVIXY_TRACKER_DISCOVERY_INTERVAL_SECONDS",
+                navixy.get("tracker_discovery_interval_seconds"),
+                DEFAULT_DISCOVERY_INTERVAL_SECONDS,
+            )
+        ),
     )
 
 

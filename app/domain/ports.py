@@ -12,6 +12,18 @@ class PositionReader(Protocol):
         """Return the current position for one tracker."""
 
 
+class TrackerCatalog(Protocol):
+    """Read the tracker ids visible to the Navixy API key."""
+
+    async def list_tracker_ids(self) -> list[int]:
+        """Return tracker ids from the tracker list.
+
+        An empty list means the account has no trackers. It is not a
+        request to subscribe to every tracker.
+        Raises TrackerDiscoveryError when the list cannot be read.
+        """
+
+
 class PositionSubscription(Protocol):
     """One open Navixy socket subscribed to a fixed tracker set."""
 

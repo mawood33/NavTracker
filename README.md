@@ -15,7 +15,7 @@ Matching is case-insensitive. Any other value stops the process at startup with 
 
 The environment variable overrides `navixy.mode` in the YAML file for `APP_ENV`. Development, staging, and production all set `mode: websocket`, so failover to polling is on unless `NAVIXY_MODE=poll`.
 
-`TRACKER_IDS` is the tracker scope for both modes (comma-separated). An empty list does not subscribe to every tracker and does not poll. The websocket subscription uses Navixy's `target.type: selected` with those ids, and any frame outside the set is dropped.
+`TRACKER_IDS` is the tracker scope for both modes (comma-separated). A non-empty list is used as given and the tracker list API is not called. An empty list discovers ids from Navixy's `tracker/list` and uses those ids for websocket and poll. Discovery retries with exponential backoff, starting at 1 second and capped at 30 seconds. A failed or empty list never subscribes to every tracker. `NAVIXY_TRACKER_DISCOVERY_INTERVAL_SECONDS` (YAML `navixy.tracker_discovery_interval_seconds`) is how often that list is read again so new trackers are picked up. The default is 300 seconds. `0` discovers once at startup and does not refresh. The environment variable overrides the YAML value.
 
 ## Failover
 
