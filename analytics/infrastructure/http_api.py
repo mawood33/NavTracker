@@ -6,9 +6,9 @@ from datetime import datetime
 from typing import Protocol
 from urllib.parse import parse_qs, unquote
 
+from analytics.application.events import area_document as _area
 from analytics.domain.access import AuthPolicy, authorize
 from analytics.domain.aoi import AreaOfInterest
-from analytics.domain.behavior import Mill, Slowdown, Stop
 from analytics.domain.export import (
     geojson_document,
     heatmap_document,
@@ -28,33 +28,25 @@ from analytics.domain.reports import Report
 from analytics.domain.routing import RoutingError
 
 
-class AnalyticsSnapshot(Protocol):
+class HealthView(Protocol):
     def health(self) -> Mapping[str, object]:
         """Liveness payload."""
 
-    def events(self) -> list[object]:
-        """Detected behavior events."""
 
-    def areas(self) -> list[AreaOfInterest]:
-        """Classified areas of interest."""
-
+class SiteView(Protocol):
     def sites(self) -> list[Site]:
         """Loaded known sites."""
 
+    def api_sites(self) -> list[dict[str, object]]:
+        """Sites in the TransloadOracle web shape."""
+
+    def verify_site(self, name: str) -> Mapping[str, object]:
+        """Mark a site confirmed from manual or truth data."""
+
+
+class RouteView(Protocol):
     def routes(self) -> list[Msr]:
         """Loaded MSRs."""
-
-    def cells(self) -> list[CellActivity]:
-        """Hex cells with activity scores."""
-
-    def msr_reports(self) -> Mapping[str, tuple[Report, ...]]:
-        """Reports correlated to each MSR name."""
-
-    def corridor_meters(self) -> float:
-        """MSR corridor buffer in meters."""
-
-    def basemap(self) -> Mapping[str, object]:
-        """Configured tile provider. The public map token may be in the tile URL."""
 
     def routing_info(self) -> Mapping[str, object]:
         """Configured routing engine and vehicle profiles."""
@@ -67,9 +59,6 @@ class AnalyticsSnapshot(Protocol):
     ) -> Mapping[str, object]:
         """Route and ETA between two loaded sites."""
 
-    def api_sites(self) -> list[dict[str, object]]:
-        """Sites in the TransloadOracle web shape."""
-
     def api_route(
         self,
         origin_id: str,
@@ -79,6 +68,11 @@ class AnalyticsSnapshot(Protocol):
     ) -> Mapping[str, object]:
         """One provider response for POST /api/routes."""
 
+    def corridor_meters(self) -> float:
+        """MSR corridor buffer in meters."""
+
+
+class IngestView(Protocol):
     def ingest_event(
         self,
         payload: Mapping[str, object],
@@ -96,6 +90,17 @@ class AnalyticsSnapshot(Protocol):
     ) -> Mapping[str, object]:
         """Accept a batch of events."""
 
+
+class ActivityView(Protocol):
+    def events(self) -> list[object]:
+        """Detected behavior events."""
+
+    def areas(self) -> list[AreaOfInterest]:
+        """Classified areas of interest."""
+
+    def cells(self) -> list[CellActivity]:
+        """Hex cells with activity scores."""
+
     def correlations_document(self) -> Mapping[str, object]:
         """Correlation groups."""
 
@@ -105,12 +110,8 @@ class AnalyticsSnapshot(Protocol):
     def advance_activity(self, activity_id: str) -> Mapping[str, object]:
         """Move one activity forward one state."""
 
-    def verify_site(self, name: str) -> Mapping[str, object]:
-        """Mark a site confirmed from manual or truth data."""
 
-    def public_base(self) -> str:
-        """Absolute origin for OGC links, or empty for relative links."""
-
+class ReferenceView(Protocol):
     def reload_reference(self) -> Mapping[str, int]:
         """Reread the reference directory."""
 
@@ -119,6 +120,45 @@ class AnalyticsSnapshot(Protocol):
 
     def save_coord_card(self, filename: str, body: bytes) -> Mapping[str, int]:
         """Replace the exercise coord card after it validates."""
+
+
+class ExportView(Protocol):
+    def sites(self) -> list[Site]:
+        """Loaded known sites."""
+
+    def routes(self) -> list[Msr]:
+        """Loaded MSRs."""
+
+    def cells(self) -> list[CellActivity]:
+        """Hex cells with activity scores."""
+
+    def msr_reports(self) -> Mapping[str, tuple[Report, ...]]:
+        """Reports correlated to each MSR name."""
+
+    def corridor_meters(self) -> float:
+        """MSR corridor buffer in meters."""
+
+    def basemap(self) -> Mapping[str, object]:
+        """Tile provider. The public map token may be in the tile URL.
+
+        The server routing token is never sent to clients.
+        """
+
+    def public_base(self) -> str:
+        """Absolute origin for OGC links, or empty for relative links."""
+
+
+class AnalyticsSnapshot(
+    HealthView,
+    SiteView,
+    RouteView,
+    IngestView,
+    ActivityView,
+    ReferenceView,
+    ExportView,
+    Protocol,
+):
+    """Combined snapshot. Each handler is typed to the view it actually uses."""
 
 
 def route_request(
@@ -229,7 +269,7 @@ _COLLECTIONS = ("sites", "cells", "routes", "evidence", "itineraries")
 
 def _api_routes(
     body: bytes,
-    snapshot: AnalyticsSnapshot,
+    snapshot: RouteView,
 ) -> tuple[int, dict[str, object] | str, str]:
     payload = _object(body)
     if payload is None:
@@ -256,7 +296,7 @@ def _api_routes(
 
 def _verify_site(
     target: str,
-    snapshot: AnalyticsSnapshot,
+    snapshot: SiteView,
 ) -> tuple[int, dict[str, object] | str, str]:
     name = unquote(target[len("/api/sites/") : -len("/verify")]).strip("/")
     if not name:
@@ -269,7 +309,7 @@ def _verify_site(
 
 def _advance_activity(
     target: str,
-    snapshot: AnalyticsSnapshot,
+    snapshot: ActivityView,
 ) -> tuple[int, dict[str, object] | str, str]:
     activity_id = unquote(target[len("/v1/activities/") : -len("/advance")]).strip("/")
     try:
@@ -281,7 +321,7 @@ def _advance_activity(
 def _ingest_events(
     body: bytes,
     headers: Mapping[str, str],
-    snapshot: AnalyticsSnapshot,
+    snapshot: IngestView,
     *,
     batch: bool,
     tacrep: bool,
@@ -306,7 +346,7 @@ def _ingest_events(
 def _coord_card(
     body: bytes,
     headers: Mapping[str, str],
-    snapshot: AnalyticsSnapshot,
+    snapshot: ReferenceView,
 ) -> tuple[int, dict[str, object] | str, str]:
     filename = headers.get("x-filename", "coord-card.yaml").strip() or "coord-card.yaml"
     try:
@@ -349,7 +389,7 @@ def _error(
 
 def _route_response(
     params: Mapping[str, str],
-    snapshot: AnalyticsSnapshot,
+    snapshot: RouteView,
 ) -> tuple[int, dict[str, object] | str, str]:
     origin = params.get("from_site", "").strip()
     destination = params.get("to_site", "").strip()
@@ -463,76 +503,6 @@ def encode_response(
     return header.encode("ascii") + body
 
 
-def event_document(
-    slowdowns: list[Slowdown],
-    stops: list[Stop],
-    mills: list[Mill],
-    areas: list[AreaOfInterest],
-) -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "events": (
-            [_slowdown(item) for item in slowdowns]
-            + [_stop(item) for item in stops]
-            + [_mill(item) for item in mills]
-        ),
-        "areas": [_area(area) for area in areas],
-    }
-
-
-def _slowdown(item: Slowdown) -> dict[str, object]:
-    return {
-        "kind": "slowdown",
-        "vehicle_id": item.vehicle_id,
-        "timestamp": _iso(item.timestamp),
-        "latitude": item.latitude,
-        "longitude": item.longitude,
-        "previous_speed_mps": item.previous_speed_mps,
-        "speed_mps": item.speed_mps,
-    }
-
-
-def _stop(item: Stop) -> dict[str, object]:
-    return {
-        "kind": "stop",
-        "vehicle_id": item.vehicle_id,
-        "start": _iso(item.start),
-        "end": _iso(item.end),
-        "dwell_seconds": item.dwell_seconds,
-        "latitude": item.latitude,
-        "longitude": item.longitude,
-    }
-
-
-def _mill(item: Mill) -> dict[str, object]:
-    return {
-        "kind": "mill",
-        "vehicle_ids": list(item.vehicle_ids),
-        "start": _iso(item.start),
-        "end": _iso(item.end),
-        "dwell_seconds": item.dwell_seconds,
-        "latitude": item.latitude,
-        "longitude": item.longitude,
-    }
-
-
-def _area(area: AreaOfInterest) -> dict[str, object]:
-    return {
-        "classification": area.classification,
-        "latitude": area.latitude,
-        "longitude": area.longitude,
-        "visit_count": area.visit_count,
-        "vehicle_ids": list(area.vehicle_ids),
-        "total_dwell_seconds": area.total_dwell_seconds,
-        "median_dwell_seconds": area.median_dwell_seconds,
-        "matched_site": area.matched_site,
-        "matched_site_types": sorted(area.matched_site_types),
-        "supported_types": sorted(area.supported_types),
-        "matched_msr": area.matched_msr,
-        "reasons": list(area.reasons),
-    }
-
-
 def _site(site: Site) -> dict[str, object]:
     return {
         "name": site.name,
@@ -563,6 +533,7 @@ def _evidence(item: Evidence) -> dict[str, object]:
         "tacrep_type": item.tacrep_type,
         "block": item.block,
         "warning": item.warning,
+        "linked_ids": list(item.linked_ids),
     }
 
 

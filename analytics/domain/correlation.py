@@ -34,6 +34,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
+from analytics.domain.confidence_text import (
+    DEFAULT_CONFIDENCE_TERMS,
+    ConfidenceTerm,
+    read_confidence_token,
+    split_reported_confidence,
+)
+from analytics.domain.positions import point_within_ellipse, point_within_radius
 from analytics.domain.reference import Evidence
 from analytics.domain.timeutil import ensure_utc, valid_position
 
@@ -44,8 +51,8 @@ ACTIVITY_STATES = (
     "transload",
     "hide_after_transload",
 )
-_KINDS = frozenset({"O", "I", "J", "E", "UNKNOWN"})
-_TRANSLOAD_KINDS = frozenset({"J", "I", "E"})
+_KINDS = frozenset({"O", "I", "J", "E", "G", "F", "UNKNOWN"})
+_TRANSLOAD_KINDS = frozenset({"J", "I", "E", "G", "F"})
 _NEXT_HIDE = {"launch": "hide_after_launch", "transload": "hide_after_transload"}
 _SERIAL_RE = re.compile(r"^([A-Z])-(\d{3})([A-Z]?)$")
 _KIND_TYPES = {
@@ -53,15 +60,22 @@ _KIND_TYPES = {
     "I": "imagery",
     "J": "movement",
     "E": "electronic",
+    "G": "ELINT",
+    "F": "FUSED",
 }
 _EVENT_KINDS = {
     "slowing": "slowdown",
     "slowdown": "slowdown",
     "stopping": "stop",
     "stop": "stop",
+    "halt": "stop",
     "milling": "mill",
     "mill": "mill",
+    "rotator": "rotator",
+    "mover": "movement",
+    "movement": "movement",
 }
+_UPDATE_RE = re.compile(r"^UPDATE\s+([A-Z]-\d{3}[A-Z]?)$")
 NeighborLookup = Callable[[str, int], set[str]]
 
 
@@ -92,6 +106,7 @@ class CorrelationPolicy:
     time_weight: float = 0.20
     neighbor_k: int = 1
     blocks: tuple[TacrepBlock, ...] = DEFAULT_BLOCKS
+    explicit_link_weight: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -125,6 +140,25 @@ class TacrepMessage:
     callsign: str = ""
     mgrs_text: str = ""
     attributes: tuple[tuple[str, str], ...] = ()
+    semi_major_m: float | None = None
+    semi_minor_m: float | None = None
+    orientation_deg: float | None = None
+    cat: str = ""
+    cat_weight: float | None = None
+    vehicle_count: int | None = None
+    correlates_to: tuple[str, ...] = ()
+    events: tuple[str, ...] = ()
+    bullseye: str = ""
+    confidence_phrase: str = ""
+    confidence_level: str = ""
+    confidence_band: str = ""
+    cat_level: int | None = None
+    ce_radius_m: float | None = None
+    equipment: tuple[str, ...] = ()
+    report_room: str = ""
+    classification: str = ""
+    vacant: bool = False
+    vacant_weight: float = 0.25
     history: tuple["TacrepMessage", ...] = ()
 
 
@@ -146,6 +180,16 @@ class Activity:
 
 
 @dataclass(frozen=True)
+class SuggestedFusion:
+    """A fused correlation inferred by analytics, not a TACREP that was sent."""
+
+    anchor_id: str
+    linked_ids: tuple[str, ...]
+    reason: str
+    tacrep_type: str = "FUSED"
+
+
+@dataclass(frozen=True)
 class Correlation:
     """Messages that share a session inside the correlation window."""
 
@@ -157,6 +201,8 @@ class Correlation:
     site_types: frozenset[str]
     activity: Activity
     messages: tuple[TacrepMessage, ...]
+    link_weight: float = 0.0
+    suggested_fusion: SuggestedFusion | None = None
 
 
 def state_site_type(state: str) -> str:
@@ -175,6 +221,7 @@ def parse_tacrep_line(
     source_id: str,
     fallback_message_id: str = "",
     policy: CorrelationPolicy | None = None,
+    terms: Sequence[ConfidenceTerm] | None = None,
 ) -> TacrepMessage | None:
     """Parse one ``KIND-seq//time//lat,lon//key=value`` line."""
 
@@ -204,6 +251,16 @@ def parse_tacrep_line(
     fields = _fields(parts[3:])
     rules = policy or CorrelationPolicy()
     identity = _identity(kind, sequence, fields.get("id", ""), source_id, body, rules)
+    active_terms = terms or DEFAULT_CONFIDENCE_TERMS
+    weight, phrase, level, band = read_confidence_token(fields.get("confidence", ""), active_terms)
+    subject, phrase, level, band, weight = _subject_confidence(
+        fields.get("subject", ""),
+        phrase,
+        level,
+        band,
+        weight,
+        active_terms,
+    )
     return TacrepMessage(
         kind=kind,
         sequence=sequence,
@@ -212,12 +269,15 @@ def parse_tacrep_line(
         longitude=longitude,
         source_id=source_id,
         source_message_id=identity[0],
-        subject=fields.get("subject", ""),
+        subject=subject,
         speed_mps=_optional_float(fields.get("speed")),
         heading=_optional_float(fields.get("heading")),
         length_m=_optional_float(fields.get("length")),
         width_m=_optional_float(fields.get("width")),
-        reported_confidence=_optional_float(fields.get("confidence")),
+        reported_confidence=weight,
+        confidence_phrase=phrase,
+        confidence_level=level,
+        confidence_band=band,
         bmoa=fields.get("bmoa", ""),
         msr=fields.get("msr", ""),
         raw=body,
@@ -236,6 +296,7 @@ def message_from_event(
     source_id: str,
     fallback_message_id: str = "",
     policy: CorrelationPolicy | None = None,
+    terms: Sequence[ConfidenceTerm] | None = None,
 ) -> TacrepMessage | None:
     """Accept a JSON event or a JSON object that wraps a TACREP line."""
 
@@ -247,6 +308,7 @@ def message_from_event(
             source_id=source,
             fallback_message_id=fallback_message_id,
             policy=policy,
+            terms=terms,
         )
     kind = str(payload.get("kind", payload.get("type", "")) or "").strip().upper()
     if kind not in _KINDS:
@@ -267,6 +329,21 @@ def message_from_event(
     raw = str(payload.get("raw", "") or "")
     identity = _identity(kind, sequence, explicit_id, source_id, raw or explicit_id, rules)
     subject = payload.get("subject", "")
+    subject_text = subject.strip() if isinstance(subject, str) else ""
+    active_terms = terms or DEFAULT_CONFIDENCE_TERMS
+    raw_confidence = payload.get("confidence")
+    if isinstance(raw_confidence, str):
+        weight, phrase, level, band = read_confidence_token(raw_confidence, active_terms)
+    else:
+        weight, phrase, level, band = _optional_float(raw_confidence), "", "", ""
+    subject_text, phrase, level, band, weight = _subject_confidence(
+        subject_text,
+        phrase,
+        level,
+        band,
+        weight,
+        active_terms,
+    )
     return TacrepMessage(
         kind=kind,
         sequence=sequence,
@@ -275,12 +352,15 @@ def message_from_event(
         longitude=longitude,
         source_id=str(payload.get("source_id", source_id) or source_id),
         source_message_id=identity[0],
-        subject=subject.strip() if isinstance(subject, str) else "",
+        subject=subject_text,
         speed_mps=_optional_float(payload.get("speed")),
         heading=_optional_float(payload.get("heading")),
         length_m=_optional_float(payload.get("length")),
         width_m=_optional_float(payload.get("width")),
-        reported_confidence=_optional_float(payload.get("confidence")),
+        reported_confidence=weight,
+        confidence_phrase=phrase,
+        confidence_level=level,
+        confidence_band=band,
         bmoa=str(payload.get("bmoa", "") or ""),
         msr=str(payload.get("msr", "") or ""),
         raw=raw,
@@ -325,11 +405,16 @@ def pair_score(
     time_score = 1.0 - gap_minutes / rules.window_minutes
     if time_score < 0:
         time_score = 0.0
-    return (
+    score = (
         rules.subject_weight * subject
         + rules.spatial_weight * spatial
         + rules.time_weight * time_score
     )
+    if explicitly_linked(left, right):
+        score += rules.explicit_link_weight
+    if score > 1:
+        return 1.0
+    return score
 
 
 def correlate(
@@ -365,6 +450,11 @@ def correlate(
             for right in bucket[index + 1 :]:
                 same = left.cell_id == right.cell_id
                 best = max(best, pair_score(left, right, rules, same_cell=same))
+        linked = any(
+            explicitly_linked(left, right)
+            for index, left in enumerate(bucket)
+            for right in bucket[index + 1 :]
+        )
         sources = tuple(dict.fromkeys(item.source_id for item in bucket if item.source_id))
         label = "possible"
         if len(sources) >= rules.minimum_sources and best >= rules.minimum_correlation_score:
@@ -387,6 +477,8 @@ def correlate(
                 site_types=frozenset({state_site_type(activity.state)}),
                 activity=activity,
                 messages=bucket,
+                link_weight=rules.explicit_link_weight if linked else 0.0,
+                suggested_fusion=_suggest(bucket),
             )
         )
     return tuple(results)
@@ -486,11 +578,14 @@ def correlation_evidence(correlation: Correlation) -> tuple[Evidence, ...]:
     accepted = correlation.activity.acceptance >= 1.0
     site_type = state_site_type(correlation.activity.state) if accepted else ""
     tacrep_type, block, warning, superseded = session_labels(correlation.messages)
+    links = linked_ids(correlation.messages)
     detail = f"state {correlation.activity.state}"
     if warning:
         detail = f"{detail}; {warning}"
     if superseded:
         detail = f"{detail}; supersedes {', '.join(superseded)}"
+    if links:
+        detail = f"{detail}; links {', '.join(links)}"
     rows = [
         Evidence(
             kind="activity",
@@ -504,6 +599,7 @@ def correlation_evidence(correlation: Correlation) -> tuple[Evidence, ...]:
             tacrep_type=tacrep_type,
             block=block,
             warning=warning,
+            linked_ids=links,
         ),
         Evidence(
             kind="correlation",
@@ -519,26 +615,77 @@ def correlation_evidence(correlation: Correlation) -> tuple[Evidence, ...]:
             tacrep_type=tacrep_type,
             block=block,
             warning=warning,
+            linked_ids=links,
         ),
     ]
     for message in correlation.messages:
-        evidence_kind = _EVENT_KINDS.get(message.event.strip().lower())
-        if evidence_kind is None:
-            continue
+        for word in _message_events(message):
+            evidence_kind = _EVENT_KINDS.get(word.strip().lower())
+            if evidence_kind is None:
+                continue
+            rows.append(
+                Evidence(
+                    kind=evidence_kind,
+                    weight=1.0,
+                    detail=f"event {word}",
+                    observed_at=message.observed_at,
+                    source=message.source_id or "tacrep",
+                    layer=message.cell_id,
+                    message_id=message.source_message_id,
+                    tacrep_type=message.tacrep_type,
+                    block=message.block_label,
+                    warning=message.block_warning,
+                    linked_ids=message.correlates_to,
+                )
+            )
+    if correlation.link_weight > 0 and links:
         rows.append(
             Evidence(
-                kind=evidence_kind,
-                weight=1.0,
-                detail=f"event {message.event}",
-                observed_at=message.observed_at,
-                source=message.source_id or "tacrep",
-                layer=message.cell_id,
-                message_id=message.source_message_id,
-                tacrep_type=message.tacrep_type,
-                block=message.block_label,
-                warning=message.block_warning,
+                kind="explicit_link",
+                weight=correlation.link_weight,
+                detail=f"links {', '.join(links)}",
+                observed_at=correlation.window_start,
+                source="correlation",
+                layer=correlation.cell_id,
+                message_id=correlation.activity.activity_id,
+                tacrep_type=tacrep_type,
+                block=block,
+                warning=warning,
+                linked_ids=links,
             )
         )
+    for message in correlation.messages:
+        if message.vacant and message.vacant_weight:
+            rows.append(
+                Evidence(
+                    kind="vacant",
+                    weight=-abs(message.vacant_weight),
+                    detail="TAI vacant",
+                    observed_at=message.observed_at,
+                    source=message.source_id or "tacrep",
+                    layer=message.cell_id,
+                    message_id=message.source_message_id,
+                    tacrep_type=message.tacrep_type,
+                    block=message.block_label,
+                    warning=message.block_warning,
+                )
+            )
+        for key, value in message.attributes:
+            if key != "responds_to" or not value:
+                continue
+            rows.append(
+                Evidence(
+                    kind="response",
+                    weight=0.2,
+                    detail=f"responds to {value}",
+                    observed_at=message.observed_at,
+                    source=message.source_id or "tacrep",
+                    layer=message.cell_id,
+                    message_id=message.source_message_id,
+                    tacrep_type=message.tacrep_type,
+                    block=message.block_label,
+                )
+            )
     return tuple(rows)
 
 
@@ -589,7 +736,12 @@ def _joins(
     span = (message.observed_at - anchor.observed_at).total_seconds() / 60
     if span < 0 or span > policy.window_minutes:
         return False
-    return _near_cell(anchor.cell_id, message.cell_id, policy.neighbor_k, neighbors)
+    if _near_cell(anchor.cell_id, message.cell_id, policy.neighbor_k, neighbors):
+        return True
+    return any(
+        within_ellipse(existing, message) or explicitly_linked(existing, message)
+        for existing in session
+    )
 
 
 def _near_cell(
@@ -643,21 +795,31 @@ def _identity(
 
 
 def parse_serial(token: str) -> "SerialId | None":
-    """Parse ``I-103`` or ``I-103A``. The suffix is a correction, not a new id."""
+    """Parse ``I-103``, ``I-103A``, or ``UPDATE G-501``.
 
-    match = _SERIAL_RE.fullmatch(token.strip().upper())
+    A trailing letter is a correction. ``UPDATE`` supersedes corrections.
+    """
+
+    text = token.strip().upper()
+    update = _UPDATE_RE.fullmatch(text)
+    body = update.group(1) if update is not None else text
+    match = _SERIAL_RE.fullmatch(body)
     if match is None:
         return None
     letter, digits, suffix = match.groups()
-    serial = int(digits)
     rank = 0 if not suffix else ord(suffix) - ord("A") + 1
+    full_id = f"{letter}-{digits}{suffix}"
+    if update is not None:
+        rank += 100
+        full_id = f"UPDATE {full_id}"
     return SerialId(
         kind=letter,
-        serial=serial,
+        serial=int(digits),
         suffix=suffix,
         base_id=f"{letter}-{digits}",
-        full_id=f"{letter}-{digits}{suffix}",
+        full_id=full_id,
         rank=rank,
+        updated=update is not None,
     )
 
 
@@ -669,6 +831,7 @@ class SerialId:
     base_id: str
     full_id: str
     rank: int
+    updated: bool = False
 
 
 def _identity_key(message: TacrepMessage) -> tuple[str, str, str]:
@@ -708,6 +871,8 @@ def _block_label(block: TacrepBlock) -> str:
 
 
 def _spatial(left: TacrepMessage, right: TacrepMessage, same_cell: bool | None) -> float:
+    if within_ellipse(left, right):
+        return 1.0
     shared_cell = same_cell
     if shared_cell is None:
         shared_cell = bool(left.cell_id) and left.cell_id == right.cell_id
@@ -747,6 +912,132 @@ def _parse_time(text: str) -> datetime | None:
     except ValueError:
         return None
     return ensure_utc(parsed)
+
+
+def within_ellipse(left: TacrepMessage, right: TacrepMessage) -> bool:
+    """True when either point lies inside the other's ellipse or CE radius."""
+
+    return _covers(left, right) or _covers(right, left)
+
+
+def explicitly_linked(left: TacrepMessage, right: TacrepMessage) -> bool:
+    """True when either message lists the other's serial."""
+
+    left_ids = {item for item in (left.serial_base, left.serial_full) if item}
+    right_ids = {item for item in (right.serial_base, right.serial_full) if item}
+    return bool(set(left.correlates_to) & right_ids or set(right.correlates_to) & left_ids)
+
+
+def linked_ids(messages: Sequence[TacrepMessage]) -> tuple[str, ...]:
+    """Serials named by ``CORRELATES TO``, plus the message that names them."""
+
+    found: list[str] = []
+    for message in messages:
+        if not message.correlates_to:
+            continue
+        for link in (message.serial_base, *message.correlates_to):
+            if link and link not in found:
+                found.append(link)
+    return tuple(found)
+
+
+def _covers(owner: TacrepMessage, point: TacrepMessage) -> bool:
+    if owner.semi_major_m is not None and owner.semi_minor_m is not None:
+        if owner.orientation_deg is None:
+            return point_within_radius(
+                point.latitude,
+                point.longitude,
+                owner.latitude,
+                owner.longitude,
+                owner.semi_major_m,
+            )
+        return point_within_ellipse(
+            point.latitude,
+            point.longitude,
+            owner.latitude,
+            owner.longitude,
+            owner.semi_major_m,
+            owner.semi_minor_m,
+            owner.orientation_deg,
+        )
+    if owner.ce_radius_m is not None:
+        return point_within_radius(
+            point.latitude,
+            point.longitude,
+            owner.latitude,
+            owner.longitude,
+            owner.ce_radius_m,
+        )
+    return False
+
+
+def _suggest(messages: Sequence[TacrepMessage]) -> SuggestedFusion | None:
+    """Name the highest-accuracy TACREP when one ellipse contains another."""
+
+    involved: dict[str, TacrepMessage] = {}
+    reasons: list[str] = []
+    for index, left in enumerate(messages):
+        for right in messages[index + 1 :]:
+            if not within_ellipse(left, right):
+                continue
+            for message in (left, right):
+                key = message.serial_base or message.source_message_id
+                if key:
+                    involved[key] = message
+            owner, point = (left, right) if _covers(left, right) else (right, left)
+            kind = "CE" if owner.semi_major_m is None else "ellipse"
+            reasons.append(f"{_id_label(point)} within {_id_label(owner)} {kind}")
+    if len(involved) < 2:
+        return None
+    anchor = min(involved.values(), key=_accuracy_key)
+    return SuggestedFusion(
+        anchor_id=anchor.serial_base or anchor.source_message_id,
+        linked_ids=tuple(sorted(involved)),
+        reason="; ".join(dict.fromkeys(reasons)),
+    )
+
+
+def _accuracy_key(message: TacrepMessage) -> tuple[float, float, str]:
+    """Lower is more accurate: lowest CAT, then smallest ellipse area or CE."""
+
+    cat = float(message.cat_level) if message.cat_level is not None else 1_000_000_000.0
+    if message.semi_major_m is not None and message.semi_minor_m is not None:
+        size = message.semi_major_m * message.semi_minor_m
+    elif message.ce_radius_m is not None:
+        size = message.ce_radius_m ** 2
+    else:
+        size = 1_000_000_000_000_000_000.0
+    return (cat, size, message.serial_base)
+
+
+def _subject_confidence(
+    subject: str,
+    phrase: str,
+    level: str,
+    band: str,
+    weight: float | None,
+    terms: Sequence[ConfidenceTerm],
+) -> tuple[str, str, str, str, float | None]:
+    """Strip a confidence phrase from the subject when the field did not set one."""
+
+    term, rest = split_reported_confidence(subject, terms)
+    if term is None:
+        return subject, phrase, level, band, weight
+    if phrase:
+        return rest, phrase, level, band, weight
+    return rest, term.phrase, term.level, term.band, term.weight
+
+
+def _id_label(message: TacrepMessage) -> str:
+    return message.serial_base or message.serial_full or message.source_message_id
+
+
+def _message_events(message: TacrepMessage) -> tuple[str, ...]:
+    if message.events:
+        return message.events
+    if message.event.strip():
+        return (message.event,)
+    return ()
 
 
 def _optional_float(value: object) -> float | None:

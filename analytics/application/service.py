@@ -9,6 +9,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
+from analytics.application.dispatch import (
+    active_publish_table,
+    destination_rooms,
+    ingest_room_list,
+    phrase_for_message,
+)
+from analytics.application.events import event_document
+from analytics.application.hub import OutputHub
+from analytics.application.ports import HexIndex, ReferenceFiles, RoomPublisher, RouteEngine
+from analytics.application.settings import AnalyticsSettings
 from analytics.domain.access import AuthPolicy
 from analytics.domain.aoi import AreaOfInterest, derive_areas
 from analytics.domain.assessment import (
@@ -26,7 +36,9 @@ from analytics.domain.behavior import (
     detect_slowdowns,
     detect_stops,
 )
-from analytics.domain.coordcard import CoordCard, parse_coord_card_text
+from analytics.domain.catce import DEFAULT_CAT_CE_METERS
+from analytics.domain.confidence_text import DEFAULT_CONFIDENCE_TERMS, ConfidenceTerm
+from analytics.domain.coordcard import CoordCard, MgrsGrid, parse_coord_card_text
 from analytics.domain.correlation import (
     Activity,
     Correlation,
@@ -36,6 +48,7 @@ from analytics.domain.correlation import (
     advance_for_gap,
     correlate,
     dedupe_messages,
+    linked_ids,
     manual_advance,
     message_from_event,
     session_labels,
@@ -46,9 +59,28 @@ from analytics.domain.outputs import (
     basemap_document,
     build_snapshot,
     diff_documents,
+    fusion_document,
     routing_metadata,
 )
-from analytics.domain.reference import Bmoa, Evidence, Msr, Site, match_bmoa, match_msr
+from analytics.domain.publish import (
+    PHRASE_RANK,
+    PublishNotice,
+    PublishTable,
+    describe_table,
+    phrase_for_confidence,
+    should_publish,
+)
+from analytics.domain.reference import (
+    ArchiveLimits,
+    Bmoa,
+    Evidence,
+    Msr,
+    Site,
+    match_bmoa,
+    match_msr,
+    named_bmoa,
+    named_msr,
+)
 from analytics.domain.reports import (
     Report,
     dedupe_reports,
@@ -57,7 +89,6 @@ from analytics.domain.reports import (
 )
 from analytics.domain.routing import (
     METERS_PER_MILE,
-    RouteCache,
     RoutingError,
     VehicleProfile,
     default_profiles,
@@ -65,16 +96,10 @@ from analytics.domain.routing import (
     reject_unsupported_vehicle,
     route_document,
 )
-from analytics.domain.tacrep_parse import parse_tacrep_body
+from analytics.domain.tacrep_parse import parse_exercise_text
+from analytics.domain.templates import Tasking, link_responses
 from analytics.domain.timeutil import ensure_utc, valid_position
 from analytics.domain.tracks import GpsFix, dedupe_fixes, fix_from_mapping
-from analytics.infrastructure.config import AnalyticsSettings
-from analytics.infrastructure.h3_index import H3Index
-from analytics.infrastructure.http_api import event_document
-from analytics.infrastructure.mgrs_grid import MgrsLibrary
-from analytics.infrastructure.reference_parse import load_reference_dir, load_reference_file
-from analytics.infrastructure.routing_engines import build_router
-from analytics.infrastructure.websocket import OutputHub
 from navtracker_common.chatsurfer import ChatSurferApiClient
 from navtracker_common.errors import PublicationError
 
@@ -98,12 +123,20 @@ class AnalyticsService:
         chat: ChatSurferApiClient | None,
         report_source: ReportSource | None = None,
         frontend: DocumentSink | None = None,
+        *,
+        index: HexIndex,
+        router: RouteEngine,
+        references: ReferenceFiles,
+        grid: MgrsGrid,
+        hub: OutputHub | None = None,
+        publisher: RoomPublisher | None = None,
     ):
         self.settings = settings
         self.chat = chat
         self.report_source = report_source
         self.frontend = frontend
-        self.hub = OutputHub()
+        self.hub = hub or OutputHub()
+        self._references = references
         self._output: dict[str, object] | None = None
         self._fixes: list[GpsFix] = []
         self._slowdowns: list[Slowdown] = []
@@ -120,25 +153,23 @@ class AnalyticsService:
         self._activity_overrides: dict[str, Activity] = {}
         self._bmoas: tuple[Bmoa, ...] = ()
         self._msr_reports: dict[str, tuple[Report, ...]] = {}
-        self._index = H3Index(settings.grid.resolution)
-        self._router = build_router(
-            settings.routing_engine,
-            settings.routing_base_url,
-            RouteCache(
-                settings.routing_cache_size,
-                settings.routing_cache_ttl_seconds,
-            ),
-            settings.routing_snap_meters,
-            settings.routing_join_meters,
-            settings.routing_mapbox_token,
-            settings.routing_timeout_seconds,
-        )
+        self._index = index
+        self._router = router
         self._cursors: dict[str, str] = {}
         self._report_cursors: dict[str, str] = {}
         self._published = ""
         self._lock = asyncio.Lock()
-        self._mgrs = MgrsLibrary()
-        self._coord_card = CoordCard(mismatch_meters=settings.coord_mismatch_meters)
+        self._mgrs = grid
+        self._publisher = publisher
+        self._taskings: tuple[Tasking, ...] = ()
+        self._published_levels: dict[str, int] = {}
+        self._coord_card = CoordCard(
+            mismatch_meters=settings.coord_mismatch_meters,
+            ellipse_unit=settings.ellipse_unit,
+            magnetic_declination_degrees=settings.magnetic_declination_degrees,
+            cat_ce=self._cat_ce(),
+            confidence_terms=self._terms(),
+        )
         self._coord_card_file = _coord_card_file(settings.coord_card_path)
         self._load_coord_card_file()
 
@@ -151,9 +182,10 @@ class AnalyticsService:
             )
             self._msrs = ()
             return {"sites": len(self._sites), "msrs": 0}
-        loaded = load_reference_dir(
+        loaded = self._references.load_dir(
             Path(directory),
             columns=self.settings.columns,
+            limits=self._archive_limits(),
         )
         self._bmoas = loaded.bmoas
         self._replace_catalog(loaded.sites, loaded.msrs)
@@ -169,13 +201,24 @@ class AnalyticsService:
         return self.load_reference()
 
     def save_upload(self, filename: str, body: bytes) -> dict[str, int]:
+        name = Path(filename).name
+        if not name or name != filename or name.startswith("."):
+            raise ValueError("reference upload name must be a single file name")
+        if len(body) > self.settings.max_upload_bytes:
+            raise ValueError("upload exceeds max_upload_bytes")
+        self._references.parse_bytes(
+            name,
+            body,
+            columns=self.settings.columns,
+            limits=self._archive_limits(),
+        )
         directory = Path(self.settings.reference_dir.strip() or "reference")
         directory.mkdir(parents=True, exist_ok=True)
-        target = directory / filename
-        target.write_bytes(body)
-        loaded = load_reference_file(target, columns=self.settings.columns)
-        self._replace_catalog(self._imported + loaded.sites, self._msrs + loaded.msrs)
-        return {"sites": len(self._sites), "msrs": len(self._msrs)}
+        target = directory / name
+        temporary = directory / f".{name}.upload"
+        temporary.write_bytes(body)
+        temporary.replace(target)
+        return self.load_reference()
 
     def add_fixes(self, fixes: list[GpsFix]) -> None:
         if not fixes:
@@ -341,6 +384,11 @@ class AnalyticsService:
             cells=self._cells,
             routes=self._msrs,
             route_reports=self._msr_reports,
+            suggested_fused=tuple(
+                fusion_document(item.suggested_fusion)
+                for item in self._correlations
+                if item.suggested_fusion is not None
+            ),
         )
 
     def add_reports(self, reports: list[Report]) -> None:
@@ -360,12 +408,17 @@ class AnalyticsService:
             if not valid_position(message.latitude, message.longitude):
                 continue
             cell_id = self._index.cell_id(message.latitude, message.longitude)
-            bmoa = message.bmoa
+            bmoa = named_bmoa(message.bmoa, self._bmoas) if message.bmoa else ""
+            if message.bmoa and bmoa not in {area.name for area in self._bmoas}:
+                for site in self._sites:
+                    if site.name.strip().upper() == message.bmoa.strip().upper():
+                        bmoa = site.name
+                        break
             if not bmoa:
                 area = match_bmoa(message.latitude, message.longitude, self._bmoas)
                 if area is not None:
                     bmoa = area.name
-            msr_name = message.msr
+            msr_name = named_msr(message.msr, self._msrs) if message.msr else ""
             if not msr_name:
                 route = match_msr(
                     message.latitude,
@@ -382,9 +435,15 @@ class AnalyticsService:
                     cell_id=cell_id,
                     bmoa=bmoa,
                     msr=msr_name,
+                    vacant_weight=self.settings.vacant_evidence_weight,
                 )
             )
-        self._messages = dedupe_messages((*self._messages, *stamped))[-2000:]
+        combined = dedupe_messages((*self._messages, *stamped))[-2000:]
+        self._messages = link_responses(
+            combined,
+            self._taskings,
+            match_meters=self._coord_card.mismatch_meters,
+        )
         self._refresh_correlations()
 
     def api_sites(self) -> list[dict[str, object]]:
@@ -447,19 +506,12 @@ class AnalyticsService:
         return {"accepted": len(messages)}
 
     def ingest_tacrep_body(self, body: str, source_id: str) -> dict[str, object]:
-        messages = list(
-            parse_tacrep_body(
-                body,
-                source_id=source_id,
-                card=self._coord_card,
-                grid=self._mgrs,
-                policy=self._policy(),
-            )
-        )
-        if not messages:
+        messages, taskings = self._read_text(body, source_id, None)
+        if not messages and not taskings:
             raise ValueError("unreadable tacrep")
-        self.add_messages(messages)
-        return {"accepted": len(messages)}
+        if messages:
+            self.add_messages(messages)
+        return {"accepted": len(messages), "taskings": len(taskings)}
 
     def ingest_batch(
         self,
@@ -473,15 +525,8 @@ class AnalyticsService:
         found: list[TacrepMessage] = []
         for item in raw:
             if isinstance(item, str):
-                found.extend(
-                    parse_tacrep_body(
-                        item,
-                        source_id=batch_source,
-                        card=self._coord_card,
-                        grid=self._mgrs,
-                        policy=self._policy(),
-                    )
-                )
+                messages, _taskings = self._read_text(item, batch_source, None)
+                found.extend(messages)
             elif isinstance(item, dict):
                 found.extend(self._messages_from_payload(item, batch_source))
         if found:
@@ -499,19 +544,15 @@ class AnalyticsService:
         if not name.lower().endswith((".yaml", ".yml", ".csv")):
             raise ValueError("coord card must be YAML or CSV")
         text = body.decode("utf-8")
-        card = parse_coord_card_text(
-            text,
-            suffix=name,
-            mismatch_meters=self.settings.coord_mismatch_meters,
-        )
+        card = self._parse_card(text, name)
         target = self._coord_card_target(name)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.parent / f".{target.name}.upload"
         temporary.write_text(text, encoding="utf-8")
         temporary.replace(target)
-        self._coord_card = card
         self._coord_card_file = target
-        return {"types": len(card.types)}
+        self._install_card(card)
+        return {"types": len(card.types), "templates": len(card.templates)}
 
     def correlations_document(self) -> dict[str, object]:
         return {
@@ -528,6 +569,10 @@ class AnalyticsService:
                     "block": labels[1],
                     "warning": labels[2],
                     "superseded": list(labels[3]),
+                    "linked_ids": list(linked_ids(item.messages)),
+                    "suggested_fused": None
+                    if item.suggested_fusion is None
+                    else fusion_document(item.suggested_fusion),
                 }
                 for item, labels in (
                     (item, session_labels(item.messages)) for item in self._correlations
@@ -657,25 +702,19 @@ class AnalyticsService:
 
     async def poll_tacrep(self) -> list[Report]:
         client = self.chat
-        if client is None or not self.settings.tacrep_rooms:
+        rooms = ingest_room_list(self._coord_card, self.settings)
+        if client is None or not rooms:
             return []
         found: list[Report] = []
         pending: list[TacrepMessage] = []
-        for room in self.settings.tacrep_rooms:
+        for room in rooms:
             messages = await client.read_room(
                 room, since=self._report_cursors.get(room)
             )
             for message in messages:
                 if message.message_id:
                     self._report_cursors[room] = message.message_id
-                parsed = parse_tacrep_body(
-                    message.body,
-                    source_id=room,
-                    observed_at=message.timestamp,
-                    card=self._coord_card,
-                    grid=self._mgrs,
-                    policy=self._policy(),
-                )
+                parsed, _taskings = self._read_text(message.body, room, message.timestamp)
                 if parsed:
                     pending.extend(parsed)
                     continue
@@ -708,6 +747,28 @@ class AnalyticsService:
             logger.exception("Analytics publication failed")
             return
         self._published = text
+
+    async def publish_routed(self) -> None:
+        """Publish confidence and CAT notices. No rooms means no publish."""
+
+        publisher = self._publisher
+        if publisher is None:
+            return
+        table = active_publish_table(self._coord_card, self.settings)
+        high_at = _high_at(self._terms())
+        for notice, rooms in self._notices(table, high_at):
+            if not rooms:
+                continue
+            if not should_publish(
+                self._published_levels.get(notice.identity),
+                notice.level_rank,
+                republish_on_higher_level=table.republish_on_higher_level,
+            ):
+                continue
+            logger.info("Publishing %s to %s", notice.identity, list(rooms))
+            for room in rooms:
+                await publisher.publish_to(room, notice.body)
+            self._published_levels[notice.identity] = notice.level_rank
 
     async def run_chat_loop(self) -> None:
         while True:
@@ -772,14 +833,21 @@ class AnalyticsService:
     def _policy(self) -> CorrelationPolicy:
         blocks = tuple(
             TacrepBlock(
-                kind=item.kind,
+                kind=letter,
                 start=item.start,
                 end=item.end,
                 tacrep_type=item.name,
             )
             for item in self._coord_card.types
+            for letter in item.kinds
         )
         return replace(self.settings.correlation, blocks=blocks)
+
+    def _archive_limits(self) -> ArchiveLimits:
+        return ArchiveLimits(
+            max_entries=self.settings.max_archive_entries,
+            max_bytes=self.settings.max_archive_bytes,
+        )
 
     def _neighbor_cells(self, cell_id: str, k: int) -> set[str]:
         return set(self._index.disk(cell_id, k))
@@ -791,16 +859,10 @@ class AnalyticsService:
     ) -> list[TacrepMessage]:
         source = str(payload.get("source_id") or source_id)
         wrapped = payload.get("tacrep", payload.get("message", payload.get("body")))
-        if isinstance(wrapped, str) and "//" in wrapped:
-            return list(
-                parse_tacrep_body(
-                    wrapped,
-                    source_id=source,
-                    card=self._coord_card,
-                    grid=self._mgrs,
-                    policy=self._policy(),
-                )
-            )
+        if isinstance(wrapped, str):
+            messages, taskings = self._read_text(wrapped, source, None)
+            if messages or taskings:
+                return messages
         message = message_from_event(payload, source_id=source, policy=self._policy())
         if message is None:
             return []
@@ -818,13 +880,129 @@ class AnalyticsService:
         if path is None or not path.is_file():
             return
         try:
-            self._coord_card = parse_coord_card_text(
-                path.read_text(encoding="utf-8"),
-                suffix=path.suffix,
-                mismatch_meters=self.settings.coord_mismatch_meters,
-            )
+            self._install_card(self._parse_card(path.read_text(encoding="utf-8"), path.name))
         except ValueError:
             logger.exception("Coord card at %s was not loaded", path)
+
+    def _read_text(
+        self,
+        body: str,
+        source_id: str,
+        observed_at: datetime | None,
+    ) -> tuple[list[TacrepMessage], tuple[Tasking, ...]]:
+        messages, taskings = parse_exercise_text(
+            body,
+            source_id=source_id,
+            observed_at=observed_at,
+            card=self._coord_card,
+            grid=self._mgrs,
+            policy=self._policy(),
+        )
+        if taskings:
+            self._taskings = (*self._taskings, *taskings)
+            if self._messages:
+                self._messages = link_responses(
+                    self._messages,
+                    self._taskings,
+                    match_meters=self._coord_card.mismatch_meters,
+                )
+                self._refresh_correlations()
+        return list(messages), taskings
+
+    def _parse_card(self, text: str, name: str) -> CoordCard:
+        return parse_coord_card_text(
+            text,
+            suffix=name,
+            mismatch_meters=self.settings.coord_mismatch_meters,
+            ellipse_unit=self.settings.ellipse_unit,
+            magnetic_declination_degrees=self.settings.magnetic_declination_degrees,
+            cat_ce=self._cat_ce(),
+            confidence_terms=self._terms(),
+        )
+
+    def _install_card(self, card: CoordCard) -> None:
+        previous = ingest_room_list(self._coord_card, self.settings)
+        previous_routes = describe_table(active_publish_table(self._coord_card, self.settings))
+        self._coord_card = card
+        current = ingest_room_list(card, self.settings)
+        if previous != current:
+            logger.info(
+                "ChatSurfer ingest rooms changed from %s to %s",
+                list(previous),
+                list(current),
+            )
+        routes = describe_table(active_publish_table(card, self.settings))
+        if routes != previous_routes:
+            logger.info("ChatSurfer publish routing %s", routes)
+
+    def _cat_ce(self) -> tuple[tuple[int, float], ...]:
+        return self.settings.cat_ce or DEFAULT_CAT_CE_METERS
+
+    def _terms(self) -> tuple[ConfidenceTerm, ...]:
+        found = tuple(
+            item for item in self.settings.confidence_terms if isinstance(item, ConfidenceTerm)
+        )
+        return found or DEFAULT_CONFIDENCE_TERMS
+
+    def _notices(
+        self,
+        table: PublishTable,
+        high_at: float,
+    ) -> list[tuple[PublishNotice, tuple[str, ...]]]:
+        probable = self.settings.confidence.probable_at
+        confirmed = self.settings.confidence.confirmed_at
+        found: list[tuple[PublishNotice, tuple[str, ...]]] = []
+        for message in self._messages:
+            phrase = phrase_for_message(
+                message,
+                probable_at=probable,
+                confirmed_at=confirmed,
+                high_at=high_at,
+            )
+            identity = message.serial_full or message.source_message_id
+            notice = PublishNotice(
+                identity=identity,
+                confidence=phrase,
+                cat=message.cat_level,
+                types=(message.tacrep_type,) if message.tacrep_type else (),
+                sources=(message.source_id,) if message.source_id else (),
+                body=message.raw or identity,
+                level_rank=PHRASE_RANK.get(phrase, 0),
+            )
+            rooms = destination_rooms(
+                message.tacrep_type,
+                confidence=phrase,
+                cat=message.cat_level,
+                sources=notice.sources,
+                report_room=message.report_room,
+                card=self._coord_card,
+                settings=self.settings,
+                table=table,
+            )
+            found.append((notice, rooms))
+        for site in self._sites:
+            phrase = phrase_for_confidence(site.confidence, probable, confirmed, high_at)
+            notice = PublishNotice(
+                identity=f"site:{site.name}",
+                confidence=phrase,
+                cat=None,
+                types=tuple(sorted(site.site_types)),
+                sources=("site",),
+                body=f"site {site.name} {phrase}",
+                level_rank=PHRASE_RANK.get(phrase, 0),
+            )
+            rooms = destination_rooms(
+                "",
+                confidence=phrase,
+                cat=None,
+                sources=notice.sources,
+                report_room="",
+                card=self._coord_card,
+                settings=self.settings,
+                table=table,
+            )
+            found.append((notice, rooms))
+        return found
 
     def auth_policy(self) -> AuthPolicy:
         origins = self.settings.ws_origins
@@ -840,6 +1018,7 @@ class AnalyticsService:
                 async with self._lock:
                     await asyncio.to_thread(self.analyze)
                     await self.publish_if_configured()
+                    await self.publish_routed()
                     message = self.publish_output()
                     if message is not None and self.frontend is not None:
                         try:
@@ -851,6 +1030,13 @@ class AnalyticsService:
             except Exception:
                 logger.exception("Analysis failed")
             await asyncio.sleep(self.settings.analysis_interval_seconds)
+
+
+def _high_at(terms: tuple[ConfidenceTerm, ...]) -> float:
+    for term in terms:
+        if term.phrase == "POSS HIGH":
+            return term.weight
+    return 0.45
 
 
 def _quiet_activity(as_of: datetime) -> SiteActivity:

@@ -43,6 +43,7 @@ class Evidence:
     tacrep_type: str = ""
     block: str = ""
     warning: str = ""
+    linked_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,14 @@ class Bmoa:
 
     name: str
     polygon: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class ArchiveLimits:
+    """Caps for KMZ and XLSX decompression. Both declared and streamed sizes count."""
+
+    max_entries: int = 64
+    max_bytes: int = 33_554_432
 
 
 @dataclass(frozen=True)
@@ -158,6 +167,41 @@ def match_msr(
             best = route
             best_distance = distance
     return best
+
+
+def named_bmoa(text: str, areas: Sequence[Bmoa]) -> str:
+    """Use the imported area name when the reported TAI or BMOA matches."""
+
+    return _canonical_name(text, [area.name for area in areas], ("TAI", "BMOA"))
+
+
+def named_msr(text: str, routes: Sequence[Msr]) -> str:
+    """Use the imported MSR name when the reported route matches."""
+
+    return _canonical_name(text, [route.name for route in routes], ("MSR",))
+
+
+def _canonical_name(text: str, names: list[str], prefixes: tuple[str, ...]) -> str:
+    raw = text.strip()
+    if not raw:
+        return ""
+    target = _name_key(raw)
+    stripped = _name_key(_drop_prefix(raw, prefixes))
+    for name in names:
+        candidate = _name_key(name)
+        without = _name_key(_drop_prefix(name, prefixes))
+        if target in {candidate, without} or stripped in {candidate, without}:
+            return name
+    return raw
+
+
+def _drop_prefix(text: str, prefixes: tuple[str, ...]) -> str:
+    pattern = "|".join(prefixes)
+    return re.sub(rf"^(?:{pattern})\s*", "", text.strip(), flags=re.IGNORECASE)
+
+
+def _name_key(text: str) -> str:
+    return " ".join(text.strip().lower().split())
 
 
 def parse_site_types(raw: str) -> frozenset[str]:

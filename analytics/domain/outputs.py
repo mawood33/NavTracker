@@ -2,14 +2,17 @@
 
 Basemap and routing metadata are advertised here. ``leaflet`` is the
 default and uses public OpenStreetMap tiles with no API key. ``mapbox``
-selects the ``dark-v11`` style; the token comes from the environment.
-``none`` is the air-gapped extra and ``xyz`` repeats an operator URL.
-The default view is the contiguous United States at zoom 4.
+selects the ``dark-v11`` style. Only ``MAPBOX_PUBLIC_TOKEN`` (or
+``NEXT_PUBLIC_MAPBOX_TOKEN``) may appear in a tile URL. The server
+routing token is not sent to clients. ``none`` is the air-gapped extra
+and ``xyz`` repeats an operator URL. The default view is the contiguous
+United States at zoom 4.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 
+from analytics.domain.correlation import SuggestedFusion
 from analytics.domain.grid import CellActivity
 from analytics.domain.reference import Msr, Site
 from analytics.domain.reports import Report, report_document
@@ -96,6 +99,18 @@ def routing_metadata(
     }
 
 
+def fusion_document(fusion: SuggestedFusion) -> dict[str, object]:
+    """A suggested FUSED correlation. ``sent`` is false because nobody transmitted it."""
+
+    return {
+        "anchor_id": fusion.anchor_id,
+        "linked_ids": list(fusion.linked_ids),
+        "reason": fusion.reason,
+        "tacrep_type": fusion.tacrep_type,
+        "sent": False,
+    }
+
+
 def build_snapshot(
     *,
     as_of: datetime,
@@ -105,6 +120,7 @@ def build_snapshot(
     cells: Sequence[CellActivity],
     routes: Sequence[Msr],
     route_reports: Mapping[str, Sequence[Report]],
+    suggested_fused: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     evidence = _evidence_rows(sites)
     return {
@@ -120,6 +136,7 @@ def build_snapshot(
             _route_row(route, route_reports.get(route.name, ())) for route in routes
         ],
         "evidence": evidence,
+        "suggested_fused": [dict(item) for item in suggested_fused],
     }
 
 
@@ -139,9 +156,11 @@ def diff_documents(
     changes.extend(_site_changes(previous.get("sites"), current.get("sites")))
     changes.extend(_cell_changes(previous.get("cells"), current.get("cells")))
     changes.extend(_route_changes(previous.get("routes"), current.get("routes")))
-    if not changes:
+    previous_fused = previous.get("suggested_fused")
+    current_fused = current.get("suggested_fused")
+    if not changes and previous_fused == current_fused:
         return None
-    return {
+    document = {
         "schema": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
         "type": "update",
@@ -150,6 +169,9 @@ def diff_documents(
         "routing": current.get("routing"),
         "changes": changes,
     }
+    if previous_fused != current_fused:
+        document["suggested_fused"] = current_fused
+    return document
 
 
 def landing_page(
@@ -378,6 +400,7 @@ def _evidence_rows(sites: Sequence[Site]) -> list[dict[str, object]]:
                     "tacrep_type": item.tacrep_type,
                     "block": item.block,
                     "warning": item.warning,
+                    "linked_ids": list(item.linked_ids),
                 }
             )
     return rows
@@ -453,6 +476,7 @@ def _evidence_features(
                         "tacrep_type": item.tacrep_type,
                         "block": item.block,
                         "warning": item.warning,
+                        "linked_ids": list(item.linked_ids),
                         "observed_at": None
                         if item.observed_at is None
                         else item.observed_at.isoformat(),

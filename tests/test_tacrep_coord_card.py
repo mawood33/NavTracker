@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from tests.test_analytics_reports import _settings
 
-from analytics.application.service import AnalyticsService
+from analytics.composition import wire_service as AnalyticsService
 from analytics.domain.access import AuthPolicy
 from analytics.domain.coordcard import CoordCardError, parse_coord_card_text
 from analytics.domain.correlation import (
@@ -206,8 +206,10 @@ def test_example_cards_parse_and_are_not_the_development_default():
         Path("config/analytics/coord_card.example.csv").read_text(encoding="utf-8"),
         suffix=".csv",
     )
-    assert [item.name for item in yaml_card.types] == ["IMINT", "MTI", "ELINT"]
-    assert [item.kind for item in csv_card.types] == ["I", "J", "E"]
+    assert [item.name for item in yaml_card.types] == ["MTI", "IMINT", "ELINT", "FUSED"]
+    assert yaml_card.types[2].kinds == ("E", "G")
+    assert [item.kind for item in csv_card.types] == ["J", "I", "E", "F"]
+    assert csv_card.types[2].kinds == ("E", "G")
     assert _settings().coord_card_path == ""
     point = MgrsLibrary().to_latlon("11SMS0000000000")
     assert point is not None

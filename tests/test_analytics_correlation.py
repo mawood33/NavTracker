@@ -6,7 +6,7 @@ from urllib.parse import quote
 import pytest
 from tests.test_analytics_reports import _settings
 
-from analytics.application.service import AnalyticsService
+from analytics.composition import wire_service as AnalyticsService
 from analytics.config_validation import validate_analytics_environment
 from analytics.domain.assessment import ConfidencePolicy, SiteActivity, assess_site
 from analytics.domain.correlation import (
@@ -376,8 +376,10 @@ def test_mapbox_settings_require_a_token(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CHAT_SURFER_API_KEY", "dummy")
     monkeypatch.delenv("NEXT_PUBLIC_MAPBOX_TOKEN", raising=False)
     monkeypatch.delenv("ANALYTICS_MAPBOX_TOKEN", raising=False)
+    monkeypatch.delenv("MAPBOX_PUBLIC_TOKEN", raising=False)
+    monkeypatch.delenv("MAPBOX_SERVER_TOKEN", raising=False)
     monkeypatch.setenv("NEXT_PUBLIC_MAP_PROVIDER", "mapbox")
-    with pytest.raises(RuntimeError, match="MAPBOX_TOKEN"):
+    with pytest.raises(RuntimeError, match="MAPBOX_PUBLIC_TOKEN"):
         load_analytics_settings()
 
 

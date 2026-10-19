@@ -2,7 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 
 from analytics.application.failover import ClairvoyantFailover
-from analytics.application.service import AnalyticsService
+from analytics.composition import wire_service as AnalyticsService
 from analytics.domain.assessment import ConfidencePolicy
 from analytics.domain.grid import GridPolicy
 from analytics.domain.reports import ReportPolicy, dedupe_reports, parse_tacrep

@@ -1,14 +1,24 @@
 import os
-from dataclasses import dataclass, fields
+from dataclasses import fields
 from pathlib import Path
 
 import yaml
 
 from analytics.application.failover import ClairvoyantFailover
+from analytics.application.settings import AnalyticsSettings
 from analytics.domain.assessment import ConfidencePolicy
+from analytics.domain.catce import DEFAULT_CAT_CE_METERS, CatTableError, parse_cat_ce
+from analytics.domain.columns import ColumnMap
+from analytics.domain.confidence_text import (
+    DEFAULT_CONFIDENCE_TERMS,
+    ConfidenceTableError,
+    terms_from_mapping,
+    terms_from_text,
+)
 from analytics.domain.correlation import CorrelationPolicy
 from analytics.domain.grid import GridPolicy
 from analytics.domain.reports import ReportPolicy
+from analytics.domain.rooms import parse_room_setting
 from analytics.domain.routing import (
     MAPBOX_DIRECTIONS_BASE,
     OSRM_PUBLIC_BASE_URL,
@@ -16,7 +26,6 @@ from analytics.domain.routing import (
     default_profiles,
 )
 from analytics.domain.thresholds import AnalysisThresholds
-from analytics.infrastructure.reference_parse import ColumnMap
 from navtracker_common.crypto import fernet_key_for_mode, require_public_material
 from navtracker_common.settings import env_setting, int_setting, pick_setting
 
@@ -26,84 +35,6 @@ _SPEED_UNITS = {"mps", "kmh"}
 _CLAIRVOYANT_MODES = {"websocket", "poll"}
 _MAP_PROVIDERS = {"leaflet", "mapbox", "none", "xyz", "osm"}
 _ROUTING_ENGINES = {"msr", "osrm", "valhalla", "graphhopper", "mapbox"}
-
-
-@dataclass(frozen=True)
-class AnalyticsSettings:
-    environment: str
-    http_host: str
-    http_port: int
-    reference_dir: str
-    publish_events: bool
-    analysis_interval_seconds: float
-    chat_poll_seconds: float
-    chat_speed_unit: str
-    read_rooms: tuple[str, ...]
-    chatsurfer_base_url: str
-    chatsurfer_api_key: str
-    chatsurfer_domain_id: str
-    chatsurfer_room_name: str
-    chatsurfer_room_name_encrypted: str
-    chatsurfer_nickname: str
-    chatsurfer_classification: str
-    chatsurfer_user_high_classification: str
-    chatsurfer_client_cert: str
-    chatsurfer_client_key: str
-    chatsurfer_rate_limit: float
-    chatsurfer_max_message_size: int
-    chatsurfer_encryption_required: bool
-    encryption_cert: str
-    encryption_key: str
-    mode: str
-    fernet_key: bytes | None
-    clairvoyant_enabled: bool
-    clairvoyant_mode: str
-    clairvoyant_ws_url: str
-    clairvoyant_base_url: str
-    clairvoyant_api_key: str
-    clairvoyant_layer: str
-    clairvoyant_failover: ClairvoyantFailover
-    thresholds: AnalysisThresholds
-    confidence: ConfidencePolicy
-    grid: GridPolicy
-    report_policy: ReportPolicy
-    tacrep_rooms: tuple[str, ...]
-    clairvoyant_report_layers: tuple[str, ...]
-    map_provider: str
-    map_tile_url: str
-    map_attribution: str
-    map_min_zoom: int
-    map_max_zoom: int
-    routing_engine: str
-    routing_base_url: str
-    routing_cache_ttl_seconds: float
-    routing_cache_size: int
-    routing_snap_meters: float
-    routing_join_meters: float
-    routing_profiles: tuple[VehicleProfile, ...]
-    frontend_enabled: bool
-    frontend_ingest_url: str
-    public_base_url: str
-    columns: ColumnMap
-    correlation: CorrelationPolicy = CorrelationPolicy()
-    routing_timeout_seconds: float = 15
-    routing_mapbox_token: str = ""
-    map_center_latitude: float = 39.8283
-    map_center_longitude: float = -98.5795
-    map_zoom: int = 4
-    map_mapbox_token: str = ""
-    read_token: str = ""
-    write_token: str = ""
-    ws_origins: tuple[str, ...] = ()
-    max_body_bytes: int = 1_048_576
-    max_upload_bytes: int = 8_388_608
-    max_ws_bytes: int = 1_048_576
-    max_archive_entries: int = 64
-    max_archive_bytes: int = 33_554_432
-    max_ws_queue: int = 8
-    fix_retention_seconds: float = 86_400
-    coord_card_path: str = ""
-    coord_mismatch_meters: float = 250.0
 
 
 def load_analytics_settings(
@@ -393,7 +324,7 @@ def load_analytics_settings(
                 15,
             ),
         ),
-        routing_mapbox_token=_mapbox_token(_routing_block(analytics)),
+        routing_mapbox_token=_server_mapbox_token(_routing_block(analytics)),
         map_center_latitude=_finite(
             "ANALYTICS_MAP_CENTER_LATITUDE",
             pick_setting(
@@ -420,7 +351,7 @@ def load_analytics_settings(
                 ),
             )
         ),
-        map_mapbox_token=_mapbox_token(_map_block(analytics)),
+        map_mapbox_token=_public_mapbox_token(_map_block(analytics)),
         read_token=env_setting("ANALYTICS_READ_TOKEN", str(analytics.get("read_token", ""))),
         write_token=env_setting("ANALYTICS_WRITE_TOKEN", str(analytics.get("write_token", ""))),
         ws_origins=_ws_origins(analytics),
@@ -474,6 +405,45 @@ def load_analytics_settings(
                 250,
             ),
         ),
+        ellipse_unit=_ellipse_unit(analytics),
+        magnetic_declination_degrees=_finite(
+            "ANALYTICS_MAGNETIC_DECLINATION",
+            pick_setting(
+                "ANALYTICS_MAGNETIC_DECLINATION",
+                analytics.get("magnetic_declination_degrees"),
+                0,
+            ),
+        ),
+        cat_ce=_cat_ce(analytics),
+        confidence_terms=_confidence_terms(analytics),
+        room_ingest=_typed_rooms("INGEST", analytics),
+        room_publish=_typed_rooms("PUBLISH", analytics),
+        default_ingest_rooms=_default_rooms("ANALYTICS_ROOMS_DEFAULT_INGEST", analytics, "ingest"),
+        default_publish_rooms=_default_rooms(
+            "ANALYTICS_ROOMS_DEFAULT_PUBLISH",
+            analytics,
+            "publish",
+        ),
+        publish_rules_text=env_setting(
+            "ANALYTICS_PUBLISH_RULES",
+            str(analytics.get("publish_rules", "") or ""),
+        ),
+        republish_on_higher_level=_bool_setting(
+            "ANALYTICS_PUBLISH_REPUBLISH_ON_HIGHER_LEVEL",
+            pick_setting(
+                "ANALYTICS_PUBLISH_REPUBLISH_ON_HIGHER_LEVEL",
+                analytics.get("republish_on_higher_level"),
+                True,
+            ),
+        ),
+        vacant_evidence_weight=_non_negative(
+            "ANALYTICS_VACANT_EVIDENCE_WEIGHT",
+            pick_setting(
+                "ANALYTICS_VACANT_EVIDENCE_WEIGHT",
+                analytics.get("vacant_evidence_weight"),
+                0.25,
+            ),
+        ),
     )
     if settings.frontend_enabled and not settings.frontend_ingest_url:
         raise RuntimeError(
@@ -481,7 +451,7 @@ def load_analytics_settings(
         )
     if settings.map_provider == "mapbox" and not settings.map_mapbox_token:
         raise RuntimeError(
-            "NEXT_PUBLIC_MAP_PROVIDER=mapbox requires NEXT_PUBLIC_MAPBOX_TOKEN."
+            "NEXT_PUBLIC_MAP_PROVIDER=mapbox requires MAPBOX_PUBLIC_TOKEN."
         )
     if settings.map_min_zoom > settings.map_max_zoom:
         raise RuntimeError(
@@ -829,19 +799,39 @@ def _routing_base_url(analytics: dict[str, object]) -> str:
         raise RuntimeError(
             f"ROUTING_PROVIDER={engine} requires ANALYTICS_ROUTING_BASE_URL."
         )
-    if engine == "mapbox" and not _mapbox_token(block):
+    if engine == "mapbox" and not _server_mapbox_token(block):
         raise RuntimeError(
-            "ROUTING_PROVIDER=mapbox requires NEXT_PUBLIC_MAPBOX_TOKEN."
+            "ROUTING_PROVIDER=mapbox requires MAPBOX_SERVER_TOKEN."
         )
     return url
 
 
-def _mapbox_token(block: dict[str, object]) -> str:
-    for name in ("NEXT_PUBLIC_MAPBOX_TOKEN", "ANALYTICS_MAPBOX_TOKEN"):
+def _public_mapbox_token(block: dict[str, object]) -> str:
+    """Client basemap token. It does not fall through to the routing token."""
+
+    for name in ("MAPBOX_PUBLIC_TOKEN", "NEXT_PUBLIC_MAPBOX_TOKEN"):
         value = os.getenv(name, "").strip()
         if value:
             return value
-    return str(block.get("mapbox_token", "") or "").strip()
+    for key in ("public_token", "mapbox_token"):
+        value = str(block.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _server_mapbox_token(block: dict[str, object]) -> str:
+    """Directions token. It is never copied from the public basemap token."""
+
+    for name in ("MAPBOX_SERVER_TOKEN", "ANALYTICS_MAPBOX_TOKEN"):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    for key in ("server_token", "mapbox_token"):
+        value = str(block.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _correlation(analytics: dict[str, object]) -> CorrelationPolicy:
@@ -893,7 +883,105 @@ def _correlation(analytics: dict[str, object]) -> CorrelationPolicy:
                 defaults.minimum_transload_speed_mps,
             ),
         ),
+        explicit_link_weight=_non_negative(
+            "ANALYTICS_CORRELATION_EXPLICIT_LINK_WEIGHT",
+            pick_setting(
+                "ANALYTICS_CORRELATION_EXPLICIT_LINK_WEIGHT",
+                raw.get("explicit_link_weight"),
+                defaults.explicit_link_weight,
+            ),
+        ),
     )
+
+
+def _cat_ce(analytics: dict[str, object]) -> tuple[tuple[int, float], ...]:
+    raw = pick_setting("ANALYTICS_CAT_CE", analytics.get("cat_ce"), "")
+    if raw in ("", None):
+        return DEFAULT_CAT_CE_METERS
+    try:
+        return parse_cat_ce(raw)
+    except CatTableError as exc:
+        raise RuntimeError(f"Invalid ANALYTICS_CAT_CE: {exc}") from exc
+
+
+def _confidence_terms(analytics: dict[str, object]) -> tuple[object, ...]:
+    raw = pick_setting("ANALYTICS_CONFIDENCE_TERMS", analytics.get("confidence_terms"), "")
+    if raw in ("", None):
+        return DEFAULT_CONFIDENCE_TERMS
+    try:
+        if isinstance(raw, list):
+            return terms_from_mapping(raw)
+        return terms_from_text(str(raw))
+    except (ConfidenceTableError, ValueError) as exc:
+        raise RuntimeError(f"Invalid ANALYTICS_CONFIDENCE_TERMS: {exc}") from exc
+
+
+def _default_rooms(
+    env_name: str,
+    analytics: dict[str, object],
+    key: str,
+) -> tuple[str, ...]:
+    raw = pick_setting(env_name, _yaml_room_block(analytics).get(key), "")
+    parsed = parse_room_setting(_room_text(raw))
+    if parsed is None:
+        return ()
+    return parsed
+
+
+def _typed_rooms(
+    suffix: str,
+    analytics: dict[str, object],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    found: dict[str, tuple[str, ...]] = {}
+    block = _yaml_room_block(analytics).get(suffix.lower())
+    if isinstance(block, dict):
+        for key, value in block.items():
+            parsed = parse_room_setting(_room_text(value))
+            if parsed is not None:
+                found[str(key)] = parsed
+    prefix = "ANALYTICS_ROOMS_"
+    tail = f"_{suffix}"
+    for key, value in os.environ.items():
+        if not key.startswith(prefix) or not key.endswith(tail):
+            continue
+        middle = key[len(prefix) : -len(tail)]
+        if middle in {"DEFAULT", ""}:
+            continue
+        parsed = parse_room_setting(value)
+        if parsed is not None:
+            found[middle] = parsed
+    return tuple(sorted(found.items()))
+
+
+def _yaml_room_block(analytics: dict[str, object]) -> dict[str, object]:
+    raw = analytics.get("message_rooms")
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+def _room_text(value: object) -> str:
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value if str(item).strip())
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _ellipse_unit(analytics: dict[str, object]) -> str:
+    raw = pick_setting(
+        "ANALYTICS_ELLIPSE_UNIT",
+        analytics.get("ellipse_unit"),
+        "nmi",
+    )
+    text = str(raw).strip().lower()
+    if text in {"nmi", "nm", "nautical", "nautical_miles"}:
+        return "nmi"
+    if text in {"km", "kilometer", "kilometers"}:
+        return "km"
+    if text in {"m", "meter", "meters"}:
+        return "meters"
+    raise RuntimeError("Invalid ANALYTICS_ELLIPSE_UNIT. Expected nmi, km, or meters.")
 
 
 def _finite(name: str, value: object) -> float:

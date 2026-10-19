@@ -1,10 +1,21 @@
 """Exercise coord card: TACREP types, id blocks, and field order.
 
 Block numbers change per exercise. Nothing in this module invents a
-range. A card lists each type name, kind letter, inclusive serial
-range, and the ordered fields for that type. ``id`` is required.
-Missing values on a message are optional. Speeds on the card are miles
-per hour. Latitude and longitude are one decimal-degree field.
+range. A card lists each type name, one or more kind letters, an
+inclusive serial range, and the ordered fields for that type. ``id``
+is required. Missing values on a message are optional. Other field
+names stay available for exercises that are not MTI, IMINT, ELINT, or
+FUSED.
+
+``ellipse_unit`` is ``nmi`` (the default), ``km``, or ``meters``.
+``magnetic_declination_degrees`` is added to magnetic ellipse
+orientation (default 0). CAT is a target-location-error category: a
+lower number is more accurate, and each category maps to a circular
+error radius. The bullseye name and point are a hook only.
+
+An optional ``rooms`` section names ChatSurfer ingest rooms and the
+publish routing table. When that section is present it replaces the
+env and config values. When it is absent, env and config are used.
 """
 
 import csv
@@ -13,6 +24,25 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import yaml
+
+from analytics.domain.catce import (
+    DEFAULT_CAT_CE_METERS,
+    CatTableError,
+    parse_cat_ce,
+    radius_for,
+)
+from analytics.domain.confidence_text import (
+    DEFAULT_CONFIDENCE_TERMS,
+    ConfidenceTableError,
+    ConfidenceTerm,
+    terms_from_mapping,
+)
+from analytics.domain.publish import (
+    PublishTable,
+    PublishTableError,
+    table_from_mapping,
+)
+from analytics.domain.rooms import TypeRooms
 
 
 class CoordCardError(ValueError):
@@ -27,6 +57,19 @@ class MgrsGrid(Protocol):
 
 
 @dataclass(frozen=True)
+class CardRooms:
+    """Rooms named by a card. ``None`` means that part was not set.
+
+    A set value, including an empty tuple or an empty publish table,
+    replaces the env and config value. ``None`` leaves env and config
+    in place.
+    """
+
+    ingest: tuple[str, ...] | None = None
+    publish: PublishTable | None = None
+
+
+@dataclass(frozen=True)
 class CoordType:
     """One TACREP type on the exercise card."""
 
@@ -35,6 +78,12 @@ class CoordType:
     start: int
     end: int
     fields: tuple[str, ...]
+    kinds: tuple[str, ...] = ()
+    rooms: TypeRooms | None = None
+
+    def __post_init__(self) -> None:
+        if not self.kinds:
+            object.__setattr__(self, "kinds", (self.kind,))
 
 
 @dataclass(frozen=True)
@@ -43,23 +92,48 @@ class CoordCard:
 
     types: tuple[CoordType, ...] = ()
     mismatch_meters: float = 250.0
+    ellipse_unit: str = "nmi"
+    magnetic_declination_degrees: float = 0.0
+    cat_ce: tuple[tuple[int, float], ...] = DEFAULT_CAT_CE_METERS
+    confidence_terms: tuple[ConfidenceTerm, ...] = DEFAULT_CONFIDENCE_TERMS
+    rooms: CardRooms | None = None
+    bullseye_name: str = ""
+    bullseye_latitude: float | None = None
+    bullseye_longitude: float | None = None
+    templates: tuple[object, ...] = ()
 
     def match(self, kind: str, serial: int) -> tuple[CoordType | None, str, str]:
         """Return the type, block label, and warning. The id is kept."""
 
         letter = kind.upper()
-        configured = [item for item in self.types if item.kind == letter]
+        configured = [item for item in self.types if letter in item.kinds]
         matching = [item for item in configured if item.start <= serial <= item.end]
         if matching:
             chosen = matching[0]
-            return chosen, _label(chosen), ""
+            return chosen, _label(letter, chosen), ""
         if not configured:
             return None, "", f"unknown TACREP type for kind {letter}"
-        label = ", ".join(_label(item) for item in configured)
+        label = ", ".join(_label(letter, item) for item in configured)
         warning = f"serial {letter}-{serial:03d} outside configured block {label}"
         if len(configured) == 1:
             return configured[0], label, warning
         return None, label, warning
+
+    def ce_radius_m(self, level: int) -> float | None:
+        """Circular-error radius in meters. A lower CAT is a smaller radius."""
+
+        return radius_for(self.cat_ce, level)
+
+    def fused_type(self) -> CoordType | None:
+        """The type used for ``UPDATE <id>`` and ``F`` messages."""
+
+        for item in self.types:
+            if "F" in item.kinds or item.name.strip().upper() == "FUSED":
+                return item
+        for item in self.types:
+            if "correlates" in item.fields:
+                return item
+        return None
 
 
 def parse_coord_card_text(
@@ -67,6 +141,10 @@ def parse_coord_card_text(
     *,
     suffix: str = "",
     mismatch_meters: float = 250.0,
+    ellipse_unit: str = "nmi",
+    magnetic_declination_degrees: float = 0.0,
+    cat_ce: tuple[tuple[int, float], ...] = DEFAULT_CAT_CE_METERS,
+    confidence_terms: tuple[ConfidenceTerm, ...] = DEFAULT_CONFIDENCE_TERMS,
 ) -> CoordCard:
     """Parse YAML or CSV. Raises ``CoordCardError`` and does not apply."""
 
@@ -74,17 +152,39 @@ def parse_coord_card_text(
     if not body:
         raise CoordCardError("Coord card is empty.")
     if suffix.lower().endswith(".csv") or _looks_like_csv(body):
-        return _from_csv(body, mismatch_meters)
+        return _from_csv(
+            body,
+            mismatch_meters,
+            ellipse_unit=ellipse_unit,
+            magnetic_declination_degrees=magnetic_declination_degrees,
+            cat_ce=cat_ce,
+            confidence_terms=confidence_terms,
+        )
     try:
         loaded = yaml.safe_load(body)
     except yaml.YAMLError as exc:
         raise CoordCardError("Coord card is not valid YAML or CSV.") from exc
     if not isinstance(loaded, dict):
         raise CoordCardError("Coord card must be a mapping.")
-    return card_from_mapping(loaded, mismatch_meters)
+    return card_from_mapping(
+        loaded,
+        mismatch_meters,
+        ellipse_unit=ellipse_unit,
+        magnetic_declination_degrees=magnetic_declination_degrees,
+        cat_ce=cat_ce,
+        confidence_terms=confidence_terms,
+    )
 
 
-def card_from_mapping(payload: dict[str, object], mismatch_meters: float) -> CoordCard:
+def card_from_mapping(
+    payload: dict[str, object],
+    mismatch_meters: float,
+    *,
+    ellipse_unit: str = "nmi",
+    magnetic_declination_degrees: float = 0.0,
+    cat_ce: tuple[tuple[int, float], ...] = DEFAULT_CAT_CE_METERS,
+    confidence_terms: tuple[ConfidenceTerm, ...] = DEFAULT_CONFIDENCE_TERMS,
+) -> CoordCard:
     """Validate a decoded card. Overlapping blocks for one letter fail."""
 
     raw_types = payload.get("types", payload.get("tacreps"))
@@ -94,28 +194,73 @@ def card_from_mapping(payload: dict[str, object], mismatch_meters: float) -> Coo
     distance = _number("mismatch_meters", mismatch)
     if distance < 0:
         raise CoordCardError("mismatch_meters must be >= 0.")
+    unit = _ellipse_unit(payload.get("ellipse_unit", ellipse_unit))
+    declination = _number(
+        "magnetic_declination_degrees",
+        payload.get("magnetic_declination_degrees", magnetic_declination_degrees),
+    )
+    radii = cat_ce
+    if "cat_ce" in payload:
+        try:
+            radii = parse_cat_ce(payload.get("cat_ce"))
+        except CatTableError as exc:
+            raise CoordCardError(str(exc)) from exc
+    terms = confidence_terms
+    if "confidence_terms" in payload:
+        try:
+            terms = terms_from_mapping(payload.get("confidence_terms"))
+        except ConfidenceTableError as exc:
+            raise CoordCardError(str(exc)) from exc
+    rooms = None
+    if "rooms" in payload:
+        rooms = _rooms(payload.get("rooms"))
+    templates: tuple[object, ...] = ()
+    if "templates" in payload:
+        templates = _templates(payload.get("templates"))
+    bullseye_name, bullseye_lat, bullseye_lon = _bullseye(payload.get("bullseye"))
     types: list[CoordType] = []
     for entry in raw_types:
         if not isinstance(entry, dict):
             raise CoordCardError("Each coord card type must be a mapping.")
         types.append(_type_from_mapping(entry))
     _reject_overlaps(types)
-    return CoordCard(types=tuple(types), mismatch_meters=distance)
+    return CoordCard(
+        types=tuple(types),
+        mismatch_meters=distance,
+        ellipse_unit=unit,
+        magnetic_declination_degrees=declination,
+        cat_ce=radii,
+        confidence_terms=terms,
+        rooms=rooms,
+        templates=templates,
+        bullseye_name=bullseye_name,
+        bullseye_latitude=bullseye_lat,
+        bullseye_longitude=bullseye_lon,
+    )
 
 
 def _type_from_mapping(entry: dict[str, object]) -> CoordType:
     name = str(entry.get("name", entry.get("type", "")) or "").strip()
-    kind = str(entry.get("kind", "") or "").strip().upper()
+    letters = _letters(entry.get("kinds", entry.get("kind")))
     if not name:
         raise CoordCardError("A coord card type needs a name.")
-    if len(kind) != 1 or not kind.isalpha():
-        raise CoordCardError(f"{name} kind must be one letter.")
+    if not letters:
+        raise CoordCardError(f"{name} kind must be one or more letters.")
     start = _whole(name, "start", entry.get("start"))
     end = _whole(name, "end", entry.get("end"))
     if start > end:
         raise CoordCardError(f"{name} range start is after end.")
     fields = _fields(name, entry.get("fields"))
-    return CoordType(name=name, kind=kind, start=start, end=end, fields=fields)
+    type_rooms = _type_rooms(entry.get("rooms")) if "rooms" in entry else None
+    return CoordType(
+        name=name,
+        kind=letters[0],
+        start=start,
+        end=end,
+        fields=fields,
+        kinds=letters,
+        rooms=type_rooms,
+    )
 
 
 def _fields(name: str, raw: object) -> tuple[str, ...]:
@@ -143,19 +288,28 @@ def _field_name(type_name: str, item: object) -> str:
 
 
 def _reject_overlaps(types: list[CoordType]) -> None:
-    by_kind: dict[str, list[CoordType]] = {}
+    by_kind: dict[str, list[tuple[int, int]]] = {}
     for item in types:
-        by_kind.setdefault(item.kind, []).append(item)
+        for letter in item.kinds:
+            by_kind.setdefault(letter, []).append((item.start, item.end))
     for kind, blocks in by_kind.items():
-        ordered = sorted(blocks, key=lambda block: (block.start, block.end))
-        previous = ordered[0]
-        for block in ordered[1:]:
-            if block.start <= previous.end:
+        ordered = sorted(blocks)
+        previous_end = ordered[0][1]
+        for start, end in ordered[1:]:
+            if start <= previous_end:
                 raise CoordCardError(f"kind {kind} blocks overlap.")
-            previous = block
+            previous_end = end
 
 
-def _from_csv(text: str, mismatch_meters: float) -> CoordCard:
+def _from_csv(
+    text: str,
+    mismatch_meters: float,
+    *,
+    ellipse_unit: str,
+    magnetic_declination_degrees: float,
+    cat_ce: tuple[tuple[int, float], ...],
+    confidence_terms: tuple[ConfidenceTerm, ...],
+) -> CoordCard:
     reader = csv.DictReader(io.StringIO(text))
     if reader.fieldnames is None:
         raise CoordCardError("Coord card CSV needs a header.")
@@ -164,23 +318,76 @@ def _from_csv(text: str, mismatch_meters: float) -> CoordCard:
     if not required <= header:
         raise CoordCardError("Coord card CSV needs name, kind, start, end, and fields.")
     types: list[dict[str, object]] = []
+    templates: list[dict[str, object]] = []
     distance = mismatch_meters
+    ingest: list[str] = []
+    ingest_set = False
+    default_rooms: list[str] = []
+    rules: list[dict[str, object]] = []
+    publish_set = False
+    republish = True
     for row in reader:
-        lowered = {(key or "").strip().lower(): (value or "").strip() for key, value in row.items()}
+        lowered: dict[str, str] = {}
+        for key, value in row.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            lowered[key.strip().lower()] = value.strip()
         if not any(lowered.values()):
             continue
         if lowered.get("mismatch_meters"):
             distance = _number("mismatch_meters", lowered["mismatch_meters"])
-        types.append(
-            {
-                "name": lowered.get("name", ""),
-                "kind": lowered.get("kind", ""),
-                "start": lowered.get("start", ""),
-                "end": lowered.get("end", ""),
-                "fields": lowered.get("fields", ""),
+        if lowered.get("ingest_rooms"):
+            ingest = _room_names(lowered["ingest_rooms"])
+            ingest_set = True
+        if lowered.get("publish_default"):
+            default_rooms = _room_names(lowered["publish_default"])
+            publish_set = True
+        if lowered.get("republish_on_higher_level"):
+            republish = lowered["republish_on_higher_level"].strip().lower() in {"1", "true", "yes"}
+            publish_set = True
+        rule = _csv_rule(lowered)
+        if rule is not None:
+            rules.append(rule)
+            publish_set = True
+        if lowered.get("template"):
+            templates.append(_csv_template(lowered))
+            continue
+        if not lowered.get("name"):
+            continue
+        kind = lowered.get("kinds") or lowered.get("kind", "")
+        entry: dict[str, object] = {
+            "name": lowered.get("name", ""),
+            "kind": kind,
+            "start": lowered.get("start", ""),
+            "end": lowered.get("end", ""),
+            "fields": lowered.get("fields", ""),
+        }
+        type_rooms = _csv_type_rooms(lowered)
+        if type_rooms is not None:
+            entry["rooms"] = type_rooms
+        types.append(entry)
+    payload: dict[str, object] = {"types": types, "mismatch_meters": distance}
+    if ingest_set or publish_set:
+        rooms: dict[str, object] = {}
+        if ingest_set:
+            rooms["ingest"] = ingest
+        if publish_set:
+            rooms["publish"] = {
+                "default": default_rooms,
+                "republish_on_higher_level": republish,
+                "rules": rules,
             }
-        )
-    return card_from_mapping({"types": types, "mismatch_meters": distance}, mismatch_meters)
+        payload["rooms"] = rooms
+    if templates:
+        payload["templates"] = templates
+    return card_from_mapping(
+        payload,
+        mismatch_meters,
+        ellipse_unit=ellipse_unit,
+        magnetic_declination_degrees=magnetic_declination_degrees,
+        cat_ce=cat_ce,
+        confidence_terms=confidence_terms,
+    )
 
 
 def _looks_like_csv(text: str) -> bool:
@@ -188,8 +395,209 @@ def _looks_like_csv(text: str) -> bool:
     return first.startswith("name,") or first.startswith("type,")
 
 
-def _label(block: CoordType) -> str:
-    return f"{block.kind}-{block.start}..{block.kind}-{block.end}"
+def _label(letter: str, block: CoordType) -> str:
+    return f"{letter}-{block.start}..{letter}-{block.end}"
+
+
+def _letters(raw: object) -> tuple[str, ...]:
+    if isinstance(raw, str):
+        tokens = re_split_kinds(raw)
+    elif isinstance(raw, list):
+        tokens = [str(item).strip().upper() for item in raw]
+    else:
+        tokens = []
+    letters = tuple(token for token in tokens if token)
+    for letter in letters:
+        if len(letter) != 1 or not letter.isalpha():
+            raise CoordCardError(f"kind {letter!r} must be one letter.")
+    if len(letters) != len(set(letters)):
+        raise CoordCardError("A coord card type repeats a kind letter.")
+    return letters
+
+
+def re_split_kinds(raw: str) -> list[str]:
+    return [part.strip().upper() for part in raw.replace("/", " ").replace(",", " ").split()]
+
+
+def _ellipse_unit(value: object) -> str:
+    text = str(value or "nmi").strip().lower()
+    if text in {"nmi", "nm", "nautical", "nautical_miles"}:
+        return "nmi"
+    if text in {"km", "kilometer", "kilometers"}:
+        return "km"
+    if text in {"m", "meter", "meters"}:
+        return "meters"
+    raise CoordCardError("ellipse_unit must be nmi, km, or meters.")
+
+
+def type_side(card: CoordCard, type_name: str, side: str) -> tuple[str, ...] | None:
+    """Rooms the card sets for one type or template. None means unset."""
+
+    from analytics.domain.rooms import type_key
+    from analytics.domain.templates import MessageTemplate
+
+    target = type_key(type_name)
+    for item in card.types:
+        if type_key(item.name) != target or item.rooms is None:
+            continue
+        chosen = item.rooms.ingest if side == "ingest" else item.rooms.publish
+        if chosen is not None:
+            return chosen
+    for template in card.templates:
+        if not isinstance(template, MessageTemplate):
+            continue
+        if type_key(template.name) != target or template.rooms is None:
+            continue
+        chosen = template.rooms.ingest if side == "ingest" else template.rooms.publish
+        if chosen is not None:
+            return chosen
+    return None
+
+
+def card_default_rooms(card: CoordCard, side: str) -> tuple[str, ...] | None:
+    """Card-level ingest list or publish default. None means the card omitted it."""
+
+    if card.rooms is None:
+        return None
+    if side == "ingest":
+        return card.rooms.ingest
+    if card.rooms.publish is None:
+        return None
+    return card.rooms.publish.default_rooms
+
+
+def _templates(raw: object) -> tuple[object, ...]:
+    from analytics.domain.templates import TemplateError, templates_from_mapping
+
+    try:
+        return templates_from_mapping(raw)
+    except TemplateError as exc:
+        raise CoordCardError(str(exc)) from exc
+
+
+def _type_rooms(raw: object) -> TypeRooms | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise CoordCardError("type rooms must be a mapping.")
+    return TypeRooms(
+        ingest=_optional_rooms(raw, "ingest"),
+        publish=_optional_rooms(raw, "publish"),
+    )
+
+
+def _optional_rooms(raw: dict[str, object], key: str) -> tuple[str, ...] | None:
+    if key not in raw:
+        return None
+    return tuple(_room_names(raw.get(key)))
+
+
+def _csv_type_rooms(row: dict[str, str]) -> dict[str, object] | None:
+    found: dict[str, object] = {}
+    if row.get("ingest"):
+        found["ingest"] = _room_names(row["ingest"])
+    if row.get("publish"):
+        found["publish"] = _room_names(row["publish"])
+    if not found:
+        return None
+    return found
+
+
+def _csv_template(row: dict[str, str]) -> dict[str, object]:
+    name = row.get("name") or row.get("template", "")
+    separator = row.get("template", "lines")
+    if separator.lower() in {"yes", "true", "1"}:
+        separator = row.get("separator", "lines") or "lines"
+    fields = _csv_template_fields(row.get("fields", ""))
+    item: dict[str, object] = {
+        "name": name,
+        "detect": row.get("detect", ""),
+        "separator": separator,
+        "fields": fields,
+        "evidence": row.get("evidence", "report") or "report",
+        "classification": row.get("classification", "").strip().lower() in {"1", "true", "yes"},
+    }
+    rooms = _csv_type_rooms(row)
+    if rooms is not None:
+        item["rooms"] = rooms
+    return item
+
+
+def _csv_template_fields(text: str) -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    for part in text.split(";"):
+        piece = part.strip()
+        if not piece:
+            continue
+        bits = [item.strip() for item in piece.split(":")]
+        entry: dict[str, object] = {"name": bits[0], "type": bits[1] if len(bits) > 1 else "text"}
+        if len(bits) > 2 and bits[2]:
+            entry["line"] = bits[2]
+        if len(bits) > 3 and bits[3]:
+            entry["pattern"] = bits[3]
+        found.append(entry)
+    return found
+
+
+def _rooms(raw: object) -> CardRooms:
+    if not isinstance(raw, dict):
+        raise CoordCardError("rooms must be a mapping.")
+    ingest = None
+    if "ingest" in raw:
+        ingest = tuple(_room_names(raw.get("ingest")))
+    publish = None
+    if "publish" in raw:
+        try:
+            publish = table_from_mapping(raw.get("publish"))
+        except PublishTableError as exc:
+            raise CoordCardError(str(exc)) from exc
+    return CardRooms(ingest=ingest, publish=publish)
+
+
+def _room_names(value: object) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        tokens = value.replace("|", ",").replace(";", ",").split(",")
+    elif isinstance(value, list):
+        tokens = [str(item) for item in value]
+    else:
+        raise CoordCardError("Room names must be a list.")
+    return [token.strip() for token in tokens if token.strip() and token.strip() != "-"]
+
+
+def _csv_rule(row: dict[str, str]) -> dict[str, object] | None:
+    rooms = row.get("publish_rooms", "")
+    confidence = row.get("confidence", "")
+    if not rooms and not confidence and not row.get("cat_min") and not row.get("rule_types"):
+        return None
+    rule: dict[str, object] = {"rooms": _room_names(rooms.replace("|", ","))}
+    if confidence:
+        rule["confidence"] = confidence.replace("|", ",")
+    if row.get("cat_min"):
+        rule["cat_min"] = row["cat_min"]
+    if row.get("cat_max"):
+        rule["cat_max"] = row["cat_max"]
+    if row.get("rule_types"):
+        rule["types"] = row["rule_types"].replace("|", ",")
+    if row.get("rule_sources"):
+        rule["sources"] = row["rule_sources"].replace("|", ",")
+    return rule
+
+
+def _bullseye(raw: object) -> tuple[str, float | None, float | None]:
+    if raw is None or raw == "":
+        return "", None, None
+    if isinstance(raw, str):
+        return raw.strip(), None, None
+    if not isinstance(raw, dict):
+        raise CoordCardError("bullseye must be a name or a mapping.")
+    name = str(raw.get("name", "") or "").strip()
+    latitude = raw.get("latitude")
+    longitude = raw.get("longitude")
+    lat = None if latitude in (None, "") else _number("bullseye latitude", latitude)
+    lon = None if longitude in (None, "") else _number("bullseye longitude", longitude)
+    return name, lat, lon
 
 
 def _whole(name: str, field: str, value: object) -> int:

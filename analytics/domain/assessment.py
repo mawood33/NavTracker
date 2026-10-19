@@ -15,7 +15,8 @@ Activity and correlation rows from ``analytics.domain.correlation``
 are evidence. An accepted transition is weight 1.0 and a rejected one
 is 0.0. Numeric confidence scales those weights by
 ``accepted_evidence_scale`` so a single acceptance stays below
-``confirmed_at``. A ``probable`` correlation label raises status to
+``confirmed_at``. An ``explicit_link`` row is not scaled: its weight
+is the configured explicit-correlation boost. A ``probable`` correlation label raises status to
 ``probable``. A ``truth`` row, including manual verification, forces
 ``confirmed``. The TransloadOracle word ``verified`` is the external
 name for ``confirmed``. ``confirmed`` is also reachable from the

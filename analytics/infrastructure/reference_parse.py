@@ -27,13 +27,24 @@ headers above, plus plain ``lat``/``lon`` and ``type``.
 import csv
 import io
 import json
+import logging
 import re
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from analytics.domain.reference import Bmoa, Msr, ReferenceData, Site, parse_site_types
+from analytics.domain.columns import ColumnMap
+from analytics.domain.reference import (
+    ArchiveLimits,
+    Bmoa,
+    Msr,
+    ReferenceData,
+    Site,
+    parse_site_types,
+)
+
+logger = logging.getLogger(__name__)
+_CHUNK = 65_536
 
 _MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _DMS_RE = re.compile(
@@ -46,35 +57,6 @@ _LENGTH_RE = re.compile(
 )
 _CLASSIFICATION_RE = re.compile(r"^\([A-Za-z]+\)\s*")
 _IGNORED_FOLDER_NAMES = {"untitled project"}
-
-
-@dataclass(frozen=True)
-class ColumnMap:
-    """Header aliases. Matching is case-insensitive."""
-
-    name: tuple[str, ...] = ("name/id", "name", "id", "site")
-    site_type: tuple[str, ...] = ("type", "site type", "site_type")
-    latitude_dms: tuple[str, ...] = ("dms lat", "latitude dms")
-    longitude_dms: tuple[str, ...] = ("dms long", "dms lon", "longitude dms")
-    latitude: tuple[str, ...] = ("lat", "latitude")
-    longitude: tuple[str, ...] = ("lon", "long", "longitude")
-    mgrs: tuple[str, ...] = ("mgrs",)
-
-    def override(self, field: str, header: str) -> "ColumnMap":
-        text = header.strip().lower()
-        current = {
-            "name": self.name,
-            "site_type": self.site_type,
-            "latitude_dms": self.latitude_dms,
-            "longitude_dms": self.longitude_dms,
-            "latitude": self.latitude,
-            "longitude": self.longitude,
-            "mgrs": self.mgrs,
-        }
-        if field not in current:
-            raise ValueError(f"Unknown reference column {field}")
-        current[field] = (text,)
-        return ColumnMap(**current)
 
 
 def parse_dms(text: str) -> float:
@@ -119,8 +101,9 @@ def parse_xlsx_sites(
     data: bytes,
     *,
     columns: ColumnMap | None = None,
+    limits: ArchiveLimits | None = None,
 ) -> ReferenceData:
-    sheet_name, rows = _xlsx_table(data)
+    sheet_name, rows = _xlsx_table(data, limits or ArchiveLimits())
     return _sites_from_rows(
         rows,
         columns or ColumnMap(),
@@ -129,7 +112,10 @@ def parse_xlsx_sites(
 
 
 def parse_kml(data: bytes) -> ReferenceData:
-    root = ET.fromstring(_bind_kml_prefix(data))
+    try:
+        root = ET.fromstring(_bind_kml_prefix(data))
+    except ET.ParseError as exc:
+        raise ValueError("KML was not valid XML") from exc
     sites: list[Site] = []
     msrs: list[Msr] = []
     _walk_kml(root, "", "", sites, msrs)
@@ -173,20 +159,22 @@ def _bind_kml_prefix(data: bytes) -> bytes:
     ).encode("utf-8")
 
 
-def parse_kmz(data: bytes) -> ReferenceData:
+def parse_kmz(data: bytes, *, limits: ArchiveLimits | None = None) -> ReferenceData:
     """Read every ``.kml`` member. The sample archive is not named doc.kml."""
 
+    caps = limits or ArchiveLimits()
     combined = ReferenceData()
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        _reject_archive(archive, caps)
         names = [
-            name
-            for name in archive.namelist()
-            if name.lower().endswith(".kml") and not name.endswith("/")
+            info
+            for info in archive.infolist()
+            if info.filename.lower().endswith(".kml") and not info.is_dir()
         ]
         if not names:
             raise ValueError("KMZ archive does not contain a KML file")
-        for name in names:
-            combined = combined.merge(parse_kml(archive.read(name)))
+        for info in names:
+            combined = combined.merge(parse_kml(_read_member(archive, info, caps)))
     return combined
 
 
@@ -194,45 +182,108 @@ def load_reference_file(
     path: Path,
     *,
     columns: ColumnMap | None = None,
+    limits: ArchiveLimits | None = None,
 ) -> ReferenceData:
-    suffix = path.suffix.lower()
-    name = path.name.lower()
-    data = path.read_bytes()
+    return parse_reference_bytes(
+        path.name,
+        path.read_bytes(),
+        columns=columns,
+        limits=limits,
+    )
+
+
+def parse_reference_bytes(
+    filename: str,
+    data: bytes,
+    *,
+    columns: ColumnMap | None = None,
+    limits: ArchiveLimits | None = None,
+) -> ReferenceData:
+    """Parse one reference file from memory. Nothing is written."""
+
+    suffix = Path(filename).suffix.lower()
+    name = Path(filename).name.lower()
+    caps = limits or ArchiveLimits()
     if suffix == ".kmz" or name.endswith(".kmz.zip"):
-        return parse_kmz(data)
+        return parse_kmz(data, limits=caps)
     if suffix == ".kml":
         return parse_kml(data)
     if suffix == ".geojson":
         return parse_geojson(data)
     if suffix == ".csv":
-        complex_name = _complex_from_filename(path.name)
+        complex_name = _complex_from_filename(Path(filename).name)
         return parse_csv_sites(
             data.decode("utf-8-sig"),
             columns=columns,
             complex_name=complex_name,
         )
     if suffix == ".xlsx":
-        return parse_xlsx_sites(data, columns=columns)
-    raise ValueError(f"Unsupported reference file: {path.name}")
+        return parse_xlsx_sites(data, columns=columns, limits=caps)
+    raise ValueError(f"Unsupported reference file: {Path(filename).name}")
 
 
 def load_reference_dir(
     directory: Path,
     *,
     columns: ColumnMap | None = None,
+    limits: ArchiveLimits | None = None,
 ) -> ReferenceData:
     if not directory.is_dir():
         return ReferenceData()
     combined = ReferenceData()
     for path in sorted(directory.iterdir()):
-        if not path.is_file():
+        if not path.is_file() or path.name.startswith("."):
             continue
         if path.suffix.lower() not in {".kml", ".kmz", ".csv", ".xlsx", ".geojson"} and not (
             path.name.lower().endswith(".kmz.zip")
         ):
             continue
-        combined = combined.merge(load_reference_file(path, columns=columns))
+        try:
+            combined = combined.merge(
+                load_reference_file(path, columns=columns, limits=limits)
+            )
+        except Exception:
+            logger.exception("Skipping unreadable reference file %s", path)
     return combined
+
+
+def _reject_archive(archive: zipfile.ZipFile, limits: ArchiveLimits) -> None:
+    infos = archive.infolist()
+    if len(infos) > limits.max_entries:
+        raise ValueError(
+            f"archive entries {len(infos)} exceed {limits.max_entries}"
+        )
+    declared = 0
+    for info in infos:
+        size = info.file_size
+        if size > limits.max_bytes:
+            raise ValueError(
+                f"declared decompressed size {size} exceeds {limits.max_bytes}"
+            )
+        declared += max(size, 0)
+        if declared > limits.max_bytes:
+            raise ValueError(
+                f"declared decompressed size {declared} exceeds {limits.max_bytes}"
+            )
+
+
+def _read_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo, limits: ArchiveLimits) -> bytes:
+    if info.file_size > limits.max_bytes:
+        raise ValueError(
+            f"declared decompressed size {info.file_size} exceeds {limits.max_bytes}"
+        )
+    chunks: list[bytes] = []
+    total = 0
+    with archive.open(info, "r") as handle:
+        while True:
+            block = handle.read(_CHUNK)
+            if not block:
+                break
+            total += len(block)
+            if total > limits.max_bytes:
+                raise ValueError(f"decompressed size exceeds {limits.max_bytes}")
+            chunks.append(block)
+    return b"".join(chunks)
 
 
 def _split_bmoas(sites: list[Site], msrs: list[Msr]) -> ReferenceData:
@@ -550,18 +601,23 @@ def _extended_type(element: ET.Element) -> str:
     return ""
 
 
-def _xlsx_table(data: bytes) -> tuple[str, list[list[str]]]:
+def _xlsx_table(data: bytes, limits: ArchiveLimits) -> tuple[str, list[list[str]]]:
     ns = {"m": _MAIN_NS}
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        _reject_archive(archive, limits)
         strings: list[str] = []
-        if "xl/sharedStrings.xml" in archive.namelist():
-            shared = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+        shared_info = _member(archive, "xl/sharedStrings.xml")
+        if shared_info is not None:
+            shared = ET.fromstring(_read_member(archive, shared_info, limits))
             for item in shared.findall("m:si", ns):
                 strings.append("".join(text.text or "" for text in item.iter(f"{{{_MAIN_NS}}}t")))
-        workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+        workbook_info = _required_member(archive, "xl/workbook.xml")
+        workbook = ET.fromstring(_read_member(archive, workbook_info, limits))
         sheet = workbook.find("m:sheets/m:sheet", ns)
         sheet_name = "" if sheet is None else sheet.attrib.get("name", "")
-        worksheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        worksheet = ET.fromstring(
+            _read_member(archive, _required_member(archive, "xl/worksheets/sheet1.xml"), limits)
+        )
         rows: list[list[str]] = []
         for row in worksheet.findall("m:sheetData/m:row", ns):
             values: dict[int, str] = {}
@@ -594,6 +650,43 @@ def _column_index(cell_ref: str) -> int:
     for char in letters:
         index = index * 26 + (ord(char.upper()) - 64)
     return index - 1
+
+
+def _member(archive: zipfile.ZipFile, name: str) -> zipfile.ZipInfo | None:
+    for info in archive.infolist():
+        if info.filename == name:
+            return info
+    return None
+
+
+def _required_member(archive: zipfile.ZipFile, name: str) -> zipfile.ZipInfo:
+    info = _member(archive, name)
+    if info is None:
+        raise ValueError(f"XLSX archive is missing {name}")
+    return info
+
+
+class FileReferences:
+    """Directory and upload adapter. Parsing happens before any write."""
+
+    def load_dir(
+        self,
+        directory: Path,
+        *,
+        columns: ColumnMap | None = None,
+        limits: ArchiveLimits | None = None,
+    ) -> ReferenceData:
+        return load_reference_dir(directory, columns=columns, limits=limits)
+
+    def parse_bytes(
+        self,
+        filename: str,
+        data: bytes,
+        *,
+        columns: ColumnMap | None = None,
+        limits: ArchiveLimits | None = None,
+    ) -> ReferenceData:
+        return parse_reference_bytes(filename, data, columns=columns, limits=limits)
 
 
 def _complex_from_filename(name: str) -> str:

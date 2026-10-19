@@ -104,7 +104,7 @@ async def _serve_websocket(
         snapshot = service.output_snapshot()
     writer.write(encode_server_text(json.dumps(snapshot, separators=(",", ":"))))
     await writer.drain()
-    queue = service.hub.subscribe()
+    queue = service.hub.subscribe(service.settings.max_ws_queue)
     closed = asyncio.Event()
 
     async def _read_client() -> None:
@@ -122,12 +122,16 @@ async def _serve_websocket(
         while not closed.is_set():
             incoming = asyncio.create_task(queue.get())
             stopping = asyncio.create_task(closed.wait())
+            dropped = asyncio.create_task(queue.dropped.wait())
             done, pending = await asyncio.wait(
-                {incoming, stopping},
+                {incoming, stopping, dropped},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
+            if dropped in done or queue.dropped.is_set():
+                closed.set()
+                break
             if incoming not in done:
                 break
             document = incoming.result()

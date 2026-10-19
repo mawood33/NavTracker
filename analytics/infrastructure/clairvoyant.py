@@ -18,11 +18,13 @@ Assumptions, all configurable:
 
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Protocol
 
 import httpx
 import websockets
 
+from analytics.application.ports import (
+    ClairvoyantConnectionError,
+)
 from analytics.domain.reports import Report, ReportPolicy, parse_layer_payload
 from analytics.domain.tracks import GpsFix, fix_from_mapping
 
@@ -30,28 +32,6 @@ SUBSCRIBE_ACTION = "subscribe"
 POLL_PATH = "/layers/{layer}/positions"
 REPORT_PATH = "/layers/{layer}/reports"
 ReportFetch = Callable[[str, Mapping[str, str]], Awaitable[object]]
-
-
-class ClairvoyantConnectionError(Exception):
-    """The Clairvoyant socket or API could not be read."""
-
-
-class ClairvoyantPoller(Protocol):
-    async def poll(self) -> list[GpsFix]:
-        """Return the latest positions from the API."""
-
-
-class ClairvoyantSubscription(Protocol):
-    async def receive(self) -> GpsFix | None:
-        """Return the next fix, or None when the frame is not a position."""
-
-    async def close(self) -> None:
-        """Close the socket."""
-
-
-class ClairvoyantStream(Protocol):
-    async def connect(self) -> ClairvoyantSubscription:
-        """Open a websocket subscription. Empty scope is not used."""
 
 
 WebSocketConnect = Callable[[str], Awaitable[websockets.ClientConnection]]

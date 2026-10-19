@@ -7,36 +7,20 @@ diffs from ``diff_documents``. Frames sent by the server are unmasked.
 import asyncio
 import base64
 import hashlib
-from collections.abc import Mapping
+
+from analytics.application.hub import ClientQueue, OutputHub
 
 _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-
-class OutputHub:
-    """Fan-out for one process. Subscribers receive documents already built."""
-
-    def __init__(self) -> None:
-        self._snapshot: dict[str, object] | None = None
-        self._queues: list[asyncio.Queue[Mapping[str, object]]] = []
-
-    def latest_snapshot(self) -> dict[str, object] | None:
-        return self._snapshot
-
-    def set_snapshot(self, document: dict[str, object]) -> None:
-        self._snapshot = document
-
-    def subscribe(self) -> asyncio.Queue[Mapping[str, object]]:
-        queue: asyncio.Queue[Mapping[str, object]] = asyncio.Queue()
-        self._queues.append(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue[Mapping[str, object]]) -> None:
-        if queue in self._queues:
-            self._queues.remove(queue)
-
-    def broadcast(self, document: Mapping[str, object]) -> None:
-        for queue in list(self._queues):
-            queue.put_nowait(document)
+__all__ = [
+    "ClientQueue",
+    "OutputHub",
+    "encode_server_frame",
+    "encode_server_text",
+    "handshake_response",
+    "read_client_frame",
+    "websocket_accept",
+]
 
 
 def websocket_accept(key: str) -> str:

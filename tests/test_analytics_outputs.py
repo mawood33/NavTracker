@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from tests.test_analytics_reports import _settings
 
-from analytics.application.service import AnalyticsService
+from analytics.composition import wire_service as AnalyticsService
 from analytics.domain.export import kml_network_link
 from analytics.domain.outputs import items_document, parse_datetime_interval
 from analytics.domain.reference import Evidence, Site

@@ -11,12 +11,12 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from analytics.domain.tracks import GpsFix
-from analytics.infrastructure.clairvoyant import (
+from analytics.application.ports import (
     ClairvoyantConnectionError,
     ClairvoyantPoller,
     ClairvoyantStream,
 )
+from analytics.domain.tracks import GpsFix
 
 logger = logging.getLogger(__name__)
 

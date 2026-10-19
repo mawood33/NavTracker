@@ -2,7 +2,10 @@ import asyncio
 from dataclasses import dataclass
 
 from analytics.application.failover import run_clairvoyant
-from analytics.application.service import AnalyticsService
+from analytics.application.hub import OutputHub
+from analytics.application.ports import RoomPublisher
+from analytics.application.service import AnalyticsService, DocumentSink, ReportSource
+from analytics.domain.routing import RouteCache
 from analytics.infrastructure.clairvoyant import (
     ClairvoyantApiClient,
     ClairvoyantReportClient,
@@ -10,6 +13,11 @@ from analytics.infrastructure.clairvoyant import (
 )
 from analytics.infrastructure.config import AnalyticsSettings
 from analytics.infrastructure.frontend import FrontendPublisher
+from analytics.infrastructure.h3_index import H3Index
+from analytics.infrastructure.mgrs_grid import MgrsLibrary
+from analytics.infrastructure.reference_parse import FileReferences
+from analytics.infrastructure.room_publish import ChatRoomPublisher
+from analytics.infrastructure.routing_engines import build_router
 from navtracker_common.chatsurfer import ChatSurferApiClient
 from navtracker_common.crypto import CryptoHandler
 
@@ -38,6 +46,39 @@ class AnalyticsApplication:
             await self.frontend.close()
 
 
+def wire_service(
+    settings: AnalyticsSettings,
+    chat: ChatSurferApiClient | None = None,
+    report_source: ReportSource | None = None,
+    frontend: DocumentSink | None = None,
+    publisher: RoomPublisher | None = None,
+) -> AnalyticsService:
+    """Composition root. Application code does not import these adapters."""
+
+    if publisher is None and chat is not None:
+        publisher = ChatRoomPublisher(chat)
+    return AnalyticsService(
+        settings,
+        chat,
+        report_source,
+        frontend,
+        index=H3Index(settings.grid.resolution),
+        router=build_router(
+            settings.routing_engine,
+            settings.routing_base_url,
+            RouteCache(settings.routing_cache_size, settings.routing_cache_ttl_seconds),
+            settings.routing_snap_meters,
+            settings.routing_join_meters,
+            settings.routing_mapbox_token,
+            settings.routing_timeout_seconds,
+        ),
+        references=FileReferences(),
+        grid=MgrsLibrary(),
+        hub=OutputHub(),
+        publisher=publisher,
+    )
+
+
 def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
     """Construct clients and the analyzer. Does not bind, connect, or publish."""
 
@@ -46,6 +87,11 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
         bool(settings.read_rooms)
         or settings.publish_events
         or bool(settings.tacrep_rooms)
+        or bool(settings.default_ingest_rooms)
+        or bool(settings.default_publish_rooms)
+        or bool(settings.room_ingest)
+        or bool(settings.room_publish)
+        or bool(settings.publish_rules_text)
     )
     chat: ChatSurferApiClient | None = None
     if needs_chat:
@@ -93,7 +139,7 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
         settings=settings,
         crypto_handler=crypto_handler,
         chat=chat,
-        service=AnalyticsService(settings, chat, report_client, frontend),
+        service=wire_service(settings, chat, report_client, frontend),
         clairvoyant_reader=reader,
         clairvoyant_stream=stream,
         report_client=report_client,

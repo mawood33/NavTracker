@@ -98,11 +98,20 @@ class ChatSurferApiClient:
                 f"tracker_id={message.tracker_id}: {exc}"
             ) from exc
 
-    async def publish_text(self, message: str) -> dict[str, Any]:
-        """Publish an already-serialized document to the configured room."""
+    async def publish_text(
+        self,
+        message: str,
+        *,
+        room_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Publish an already-serialized document.
+
+        ``room_name`` selects a room other than the configured default.
+        The body is still encrypted when encryption is required.
+        """
 
         try:
-            return await self._post_plaintext(message)
+            return await self._post_plaintext(message, room_name=room_name)
         except asyncio.CancelledError:
             raise
         except PublicationError:
@@ -120,8 +129,12 @@ class ChatSurferApiClient:
         )
         return await self._post_plaintext(message)
 
-    async def _post_plaintext(self, message: str) -> dict[str, Any]:
-        room_name = self.room_name
+    async def _post_plaintext(
+        self,
+        message: str,
+        room_name: str | None = None,
+    ) -> dict[str, Any]:
+        selected = room_name or self.room_name
         if self.encryption_required:
             if self.crypto_handler is None:
                 raise PublicationError(
@@ -129,7 +142,8 @@ class ChatSurferApiClient:
                 )
 
             message = self.crypto_handler.encrypt(message)
-            room_name = self.room_name_encrypted
+            if room_name is None:
+                selected = self.room_name_encrypted
 
         message = self._fit_message_limit(message)
         logger.debug(
@@ -148,7 +162,7 @@ class ChatSurferApiClient:
                 "domainId": self.domain_id,
                 "message": message,
                 "nickname": self.nickname,
-                "roomName": room_name,
+                "roomName": selected,
                 "userHighClassification": self.user_high_classification
             },
         )
