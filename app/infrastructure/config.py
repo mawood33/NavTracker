@@ -92,7 +92,6 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
     navixy = config.get("navixy", {})
     chatsurfer = config.get("chatsurfer", {})
     crypto = config.get("crypto", {})
-    
     raw_tracker_ids = _env(
         "TRACKER_IDS",
         ",".join(map(str, navixy.get("tracker_ids", []))),

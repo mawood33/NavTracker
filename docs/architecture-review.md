@@ -142,7 +142,7 @@ class MessagePublisher(Protocol):
 | --- | --- | --- |
 | What a Navixy state means as a position | Duplicated in `NavixyApiClient.get_position` and `NavixyWebSocketClient._parse_event` | The two mappers do not agree. REST reads `state.gps.location.lat/lng` and `gps.alt`, and copies connection and movement status. The WebSocket parser reads top-level `lat`/`lng`/`altitude` and drops connection and movement. |
 | Which events are positions | `NavixyWebSocketClient._parse_event` keeps only `type is None` or `type == "location"` | The same client subscribes to `state_batch` and `readings_batch` (`navixy_ws.py`). Frames it asked for are discarded unless they happen to carry a different shape. No fixture documents the real frame. |
-| Which trackers are in scope | REST uses `settings.tracker_ids`. WebSocket passes `tracker_ids` and then ignores them: the `"trackers"` field is commented out and the subscribe target is `"type": "all"` | Production YAML sets `source_mode: websocket` and `tracker_ids: []`. Streaming mode publishes every tracker the API key can see. The poll path publishes only the configured list. |
+| Which trackers are in scope | REST uses `settings.tracker_ids`. WebSocket passes `tracker_ids` and then ignores them: the `"trackers"` field is commented out and the subscribe target is `"type": "all"` | Production YAML selects websocket and sets `tracker_ids: []`. Streaming mode publishes every tracker the API key can see. The poll path publishes only the configured list. |
 | Missing provider timestamp | Both adapters substitute `datetime.now(timezone.utc)` | "Time of observation" and "time we noticed the gap" become the same field. Downstream consumers cannot tell a live fix from a synthetic one. |
 | Which room receives the message | `ChatSurferApiClient.publish` switches on `encryption_required` | Room routing is publication policy coded inside the HTTP client. |
 | Maximum message size | `ChatSurferApiClient._fit_message_limit` | The name says it fits the message. The body raises `ValueError` and drops it. The rule is real; the behavior is a hard reject with no metric. |
@@ -217,7 +217,7 @@ Current behavior, traced through the loops:
 | Navixy HTTP or parse error for one tracker | Logged, other trackers continue, no backoff | n/a |
 | WebSocket disconnect or any exception in the client loop | n/a | Sleep 5 seconds inside the client, no log. The service's own "disconnected" log does not run for those errors |
 | ChatSurfer HTTP error, encryption error, or oversize message | Logged per tracker, position dropped, loop continues | The exception leaves the `async for`, the service logs "Navixy WebSocket disconnected", sleeps 5 seconds, and opens a new Navixy session |
-| Bad `NAVIXY_MODE` such as `ws` | Treated as poll. Only the exact string `websocket` selects streaming | |
+| Bad `NAVIXY_MODE` such as `ws` | Startup fails fast with `Invalid NAVIXY_MODE`. Only `websocket` and `poll` are accepted | |
 | Missing `NAVIXY_API_KEY` or `CHAT_SURFER_API_KEY` | `RuntimeError` at startup. Clear | |
 | `FERNET_KEY` unset | Startup succeeds. YAML value `"None"` satisfies `_env` | |
 | Fernet mode | New random key every process start. Published tokens cannot be decrypted with the configured key | |
@@ -308,11 +308,11 @@ The container hardening is ahead of the application. Read-only root, dropped cap
 
 **Trust bundle.** `certs/ca-bundle.crt` is about 17,400 lines and is copied into the image trust store. It contains public roots and a private enterprise root (CommScope Public Trust RSA Root). Rotation requires a code change and an image rebuild. There is no note of where the bundle came from or when it was last refreshed. Keep it if ChatSurfer's chain needs that root, and add a short `certs/README` with provenance and an expiry check. Do not also depend on it for Navixy's public chain if the distro CAs already cover that.
 
-**Environment drift.** Development and staging set `encryption_required: true`. Production sets `encryption_required: false` and uses WebSocket plus an empty tracker list. Those may be deliberate. They are invisible in review because nothing renders the effective settings at startup. Log the resolved non-secret settings once (mode, source, room names, encryption on/off, tracker count, rate limit). Never log the API keys, the Fernet key, or the cert PEMs.
+**Environment drift.** Development and staging set `encryption_required: true`. Production sets `encryption_required: false` and uses WebSocket plus an empty tracker list. Those may be deliberate. They are invisible in review because nothing renders the effective settings at startup. Log the resolved non-secret settings once (navixy mode, crypto mode, room names, encryption on/off, tracker count, rate limit). Never log the API keys, the Fernet key, or the cert PEMs.
 
 **Supply chain and CI.** Nothing in `.github/` builds the image, runs a linter, or runs tests. Requirements are version-pinned and not hash-pinned. The image tag floats on `python:3.12-slim`. A minimal pipeline on pull requests: `ruff`, `mypy` (strict on `app/domain` and `app/application` first), `pytest`, `docker build`. Add hashes and an image scan once that pipeline is green. There is no CD, no SBOM, and no IaC beyond compose. That is acceptable for a single worker; the missing CI is not.
 
-**Logging.** `logging.basicConfig` writes unstructured text. Enough for one container, poor for a collector. JSON logs with `tracker_id`, `source_mode`, `room`, and `error_type` are the step that makes the error policy operable. The WebSocket client needs to log the exception it currently swallows.
+**Logging.** `logging.basicConfig` writes unstructured text. Enough for one container, poor for a collector. JSON logs with `tracker_id`, `navixy_mode`, `room`, and `error_type` are the step that makes the error policy operable. The WebSocket client needs to log the exception it currently swallows.
 
 ## 7. Recommendations
 
@@ -323,7 +323,7 @@ Impact is the effect on correctness and on the ability to change one context wit
 1. **Split the source port and honor tracker scope in both modes.** Replace `TrackerDataSource` with a reader port and a stream port in `app/domain/ports.py`. In `app/infrastructure/navixy_ws.py`, apply `tracker_ids` after parse (and send them in the subscribe payload once a captured frame confirms the field). Delete the unused `stream_positions` stub on the REST client or stop pretending it is the same interface. An empty scope should publish nothing and log that, not subscribe to `all`.
 2. **Stop treating publication failure as a Navixy disconnect.** In `TrackerWebSocketService.run`, catch publication errors inside the `async for`, log them, and continue reading. Reconnect only when the stream itself ends or raises a source error. Log the exception inside `NavixyWebSocketClient.stream_positions` instead of sleeping silently.
 3. **Fix configuration so the process uses the settings it loads.** Pass `settings.fernet_key` into `CryptoHandler` and refuse Fernet mode when the key is missing or the string `"None"`. Delete `encryption_key` from `Settings` until decrypt is a real feature, or pass it as `private_key_path` on purpose. Add `environment: APP_ENV: ${APP_ENV:-development}` to `docker-compose.yml`. Change `.gitignore` so `.env.example` can be committed, and fix `docs/Installation.txt` to match.
-4. **Validate settings once.** Reject unknown `source_mode` and unknown crypto `mode` in `load_settings`. Fail startup when encryption is required and the cert file is missing, and when the ChatSurfer client cert paths are set but absent. Log the resolved non-secret configuration.
+4. **Validate settings once.** Reject an invalid `NAVIXY_MODE` and an unknown crypto `mode` in `load_settings`. Fail startup when encryption is required and the cert file is missing, and when the ChatSurfer client cert paths are set but absent. Log the resolved non-secret configuration.
 5. **Add the first test bar and a PR workflow.** `pyproject.toml` with pytest, ruff, and mypy. Unit tests for both parsers (using synthetic fixtures shaped like the current code, clearly marked as provisional), crypto round trip, settings, and the two loop policies. A workflow that runs those on every pull request. This is the change that makes the rest safe.
 
 ### High impact, medium effort
@@ -339,7 +339,7 @@ Impact is the effect on correctness and on the ability to change one context wit
 11. **Give `TrackerPosition` real invariants.** Value objects for tracker id, latitude, longitude, and heading. One timestamp rule shared by both mappers. A position that fails validation is `PositionRejected` and counted, not a synthetic `now()` stamp.
 12. **Nest configuration.** `NavixySettings`, `ChatSurferSettings`, `CryptoSettings` inside `Settings`, built by one loader. The composition root in `main` gets shorter because the Fernet-versus-PEM branch moves next to the crypto settings.
 13. **Poll with a bounded fan-out.** A small semaphore in `TrackerPollingService` so one slow tracker does not stretch the interval for the rest. Keep publication serial if the rate limiter remains global.
-14. **Structured logs.** JSON log lines with `tracker_id`, `source_mode`, `room`, `error_type`. Fix the debug line so it records the room actually posted to. Log when the server rate-limit remaining header hits zero.
+14. **Structured logs.** JSON log lines with `tracker_id`, `navixy_mode`, `room`, `error_type`. Fix the debug line so it records the room actually posted to. Log when the server rate-limit remaining header hits zero.
 15. **Package the code.** Add `app/__init__.py`, point pytest and mypy at it, and keep the import rule green with a test.
 
 ### Medium impact, low effort

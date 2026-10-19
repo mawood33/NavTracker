@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 import pytest
+from app.application.supervisor import IngestionSupervisor
 from app.domain.errors import TrackerDiscoveryError
 from app.infrastructure.config import load_settings
 from app.infrastructure.navixy_api import NavixyApiClient
@@ -109,6 +110,37 @@ def test_list_tracker_ids_hides_transport_errors():
         await client.close()
 
     asyncio.run(scenario())
+
+
+def test_tracker_ids_reject_non_integers(monkeypatch):
+    _scrub(monkeypatch)
+    monkeypatch.setenv("TRACKER_IDS", "1,abc")
+    with pytest.raises(RuntimeError, match="Expected comma-separated integers"):
+        load_settings()
+
+
+def test_tracker_ids_parse_spaced_integers(monkeypatch):
+    _scrub(monkeypatch)
+    monkeypatch.setenv("TRACKER_IDS", "1, 2")
+    assert load_settings().tracker_ids == [1, 2]
+
+
+def test_empty_tracker_ids_mean_discovery(monkeypatch):
+    _scrub(monkeypatch)
+    monkeypatch.setenv("TRACKER_IDS", "")
+    settings = load_settings()
+    assert settings.tracker_ids == []
+    supervisor = IngestionSupervisor(
+        reader=None,
+        stream=None,
+        publisher=None,
+        tracker_ids=settings.tracker_ids,
+        mode=settings.navixy_mode,
+        poll_interval_seconds=settings.poll_interval_seconds,
+        policy=settings.failover,
+        catalog=object(),
+    )
+    assert supervisor._uses_discovery is True
 
 
 def test_discovery_interval_defaults_and_rejects_negative(monkeypatch):
