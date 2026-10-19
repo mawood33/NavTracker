@@ -51,6 +51,45 @@ def _frame(tracker_id, timestamp="2026-01-01T00:00:00Z"):
     return json.dumps(body)
 
 
+def test_state_batch_is_parsed_like_poll_and_filtered_to_scope():
+    state = {
+        "source_id": 3,
+        "gps": {
+            "updated": "2026-01-01T00:00:00Z",
+            "location": {"lat": 4, "lng": 5},
+            "alt": 6,
+        },
+        "connection_status": "active",
+        "movement_status": "moving",
+    }
+    frame = json.dumps(
+        {
+            "type": "state_batch",
+            "data": [
+                {"source_id": 99, "gps": {"location": {"lat": 1, "lng": 1}}},
+                state,
+                {"tracker_id": 1, "lat": 8, "lng": 9},
+            ],
+        }
+    )
+    socket = _Socket([frame])
+    subscription = NavixySubscription(socket, {1, 3}, idle_timeout=1)
+
+    async def collect():
+        found = []
+        for _ in range(2):
+            found.append(await subscription.receive())
+        await subscription.close()
+        return found
+
+    found = asyncio.run(collect())
+    assert [item.tracker_id for item in found] == [3, 1]
+    assert found[0].altitude == 6.0
+    assert found[0].connection_status == "active"
+    assert found[0].movement_status == "moving"
+    assert found[1].timestamp is None
+
+
 def test_subscription_drops_trackers_outside_scope_and_keeps_missing_time():
     socket = _Socket(
         [
