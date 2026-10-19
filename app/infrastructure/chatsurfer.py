@@ -1,10 +1,13 @@
+import asyncio
 import json
 import logging
 from typing import Any
 
 import httpx
 
-from app.domain.entities import TrackerPosition
+from app.domain.errors import PublicationError
+from app.domain.publication import OutboundMessage
+
 from .crypto import CryptoHandler
 from .limiter import RateLimiter
 
@@ -62,16 +65,32 @@ class ChatSurferApiClient:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def publish(self, position: TrackerPosition) -> dict[str, Any]:
+    async def publish(self, message: OutboundMessage) -> dict[str, Any]:
+        try:
+            return await self._publish_message(message)
+        except asyncio.CancelledError:
+            raise
+        except PublicationError:
+            raise
+        except Exception as exc:
+            raise PublicationError(
+                "ChatSurfer publish failed for "
+                f"tracker_id={message.tracker_id}: {exc}"
+            ) from exc
+
+    async def _publish_message(
+        self,
+        outbound: OutboundMessage,
+    ) -> dict[str, Any]:
         message = json.dumps(
-            position.as_dict(),
+            outbound.to_payload(),
             separators=(",", ":"),
         )
 
         room_name = self.room_name
         if self.encryption_required:
             if self.crypto_handler is None:
-                raise RuntimeError(
+                raise PublicationError(
                     "Encryption is required but CryptoHandler is unavailable"
                 )
 
@@ -79,7 +98,12 @@ class ChatSurferApiClient:
             room_name = self.room_name_encrypted
 
         message = self._fit_message_limit(message)
-        logger.debug(f'Publish to ChatSurfer: room-{self.room_name}, nickname-{self.nickname}, encryption-{self.encryption_required}')
+        logger.debug(
+            "Publish to ChatSurfer: room-%s, nickname-%s, encryption-%s",
+            self.room_name,
+            self.nickname,
+            self.encryption_required,
+        )
 
         await self.rate_limiter.acquire()
 
@@ -101,7 +125,7 @@ class ChatSurferApiClient:
         if len(message) <= self.max_message_size:
             return message
 
-        raise ValueError(
+        raise PublicationError(
             "Message exceeds ChatSurfer message-size limit: "
             f"{len(message)} > {self.max_message_size}"
         )
@@ -129,6 +153,6 @@ class ChatSurferApiClient:
                 },
             }
 
-        raise RuntimeError(
+        raise PublicationError(
             f"ChatSurfer HTTP {response.status_code}: {body}"
         )

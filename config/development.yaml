@@ -1,7 +1,8 @@
 navixy:
   base_url: "https://api.eu.navixy.com/v2"
   ws_url: "wss://ws.navixy.com/events"
-  source_mode: "poll"
+  # websocket (default) fails over to polling. poll never opens the websocket.
+  mode: "websocket"
   tracker_ids: [123456]
   poll_interval_seconds: 30
 
@@ -21,7 +22,8 @@ chatsurfer:
 
 # mode: pem, update cert/key to tls.crt/tls.key
 # mode: ssh, update cert/key to id_rsa.pub/id_rsa
-# mode: fernet, remove tls.crt/tls.key from /data/certs/client dir since that is default
+# mode: fernet, set FERNET_KEY. pem and ssh ignore FERNET_KEY.
+# The literal None is unset, not a key.
 crypto:
   encryption_cert: "/data/certs/client/tls.crt"
   encryption_key: "/data/certs/client/tls.key"
