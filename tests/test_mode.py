@@ -89,8 +89,17 @@ def _scrub_env(monkeypatch):
 def test_load_settings_uses_yaml_mode_when_env_unset(monkeypatch):
     _scrub_env(monkeypatch)
     settings = load_settings()
-    assert settings.navixy_mode is IngestionMode.POLL
+    assert settings.environment == "development"
+    assert settings.navixy_mode is IngestionMode.WEBSOCKET
     assert settings.failover.max_attempts == DEFAULT_MAX_ATTEMPTS
+
+
+def test_load_settings_uses_websocket_for_staging(monkeypatch):
+    _scrub_env(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "staging")
+    settings = load_settings()
+    assert settings.environment == "staging"
+    assert settings.navixy_mode is IngestionMode.WEBSOCKET
 
 
 def test_load_settings_env_overrides_yaml(monkeypatch):
@@ -114,7 +123,7 @@ def test_load_settings_defaults_to_websocket_when_mode_omitted(
 ):
     _scrub_env(monkeypatch)
     with open("config/development.yaml", encoding="utf-8") as source:
-        text = source.read().replace('  mode: "poll"\n', "")
+        text = source.read().replace('  mode: "websocket"\n', "")
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "development.yaml").write_text(text, encoding="utf-8")

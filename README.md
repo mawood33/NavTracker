@@ -13,7 +13,7 @@ Set `NAVIXY_MODE` to `websocket` or `poll`.
 
 Matching is case-insensitive. Any other value stops the process at startup with `Invalid NAVIXY_MODE=... Expected one of: websocket, poll.`
 
-The environment variable overrides `navixy.mode` in the YAML file for `APP_ENV`. The checked-in development and staging files set `mode: poll`. Production sets `mode: websocket`. `TRACKER_SOURCE_MODE` and `navixy.source_mode` are no longer read; set `NAVIXY_MODE` instead.
+The environment variable overrides `navixy.mode` in the YAML file for `APP_ENV`. Development, staging, and production all set `mode: websocket`, so failover to polling is on unless `NAVIXY_MODE=poll`. `TRACKER_SOURCE_MODE` and `navixy.source_mode` are no longer read; set `NAVIXY_MODE` instead.
 
 `TRACKER_IDS` is the tracker scope for both modes (comma-separated). An empty list does not subscribe to every tracker and does not poll. The websocket subscription uses Navixy's `target.type: selected` with those ids, and any frame outside the set is dropped.
 

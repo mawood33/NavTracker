@@ -1,9 +1,8 @@
 navixy:
   base_url: "https://api.eu.navixy.com/v2"
   ws_url: "wss://ws.navixy.com/events"
-  # websocket (default when NAVIXY_MODE and mode are unset) or poll.
-  # websocket fails over to polling. poll never opens the websocket.
-  mode: "poll"
+  # websocket (default) fails over to polling. poll never opens the websocket.
+  mode: "websocket"
   tracker_ids: []
   poll_interval_seconds: 15
 
