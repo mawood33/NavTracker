@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 
 @dataclass(frozen=True)
 class TrackerPosition:
+    """A tracker fix. This is not the ChatSurfer payload."""
+
     tracker_id: int
     latitude: float
     longitude: float
@@ -14,21 +15,3 @@ class TrackerPosition:
     altitude: float | None = None
     connection_status: str | None = None
     movement_status: str | None = None
-    raw: dict[str, Any] | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "tracker_id": self.tracker_id,
-            "latitude": self.latitude,
-            "longitude": self.longitude,
-            "timestamp": (
-                self.timestamp.isoformat()
-                if self.timestamp is not None
-                else None
-            ),
-            "speed": self.speed,
-            "heading": self.heading,
-            "altitude": self.altitude,
-            "connection_status": self.connection_status,
-            "movement_status": self.movement_status,
-        }

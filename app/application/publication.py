@@ -3,6 +3,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from app.application.messages import to_outbound_message
 from app.domain.entities import TrackerPosition
 from app.domain.ports import MessagePublisher
 
@@ -162,7 +163,7 @@ class LatestFixRetry:
 
     async def _attempt(self, position: TrackerPosition) -> BaseException | None:
         try:
-            await self.publisher.publish(position)
+            await self.publisher.publish(to_outbound_message(position))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

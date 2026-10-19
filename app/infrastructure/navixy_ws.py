@@ -1,13 +1,13 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
 from typing import Any
 
 import websockets
 
 from app.domain.entities import TrackerPosition
 from app.domain.errors import SourceConnectionError
+from app.infrastructure.navixy_parse import parse_websocket_event
 
 logger = logging.getLogger(__name__)
 
@@ -35,36 +35,6 @@ def build_subscribe_message(
     }
 
 
-def parse_event(event: dict[str, Any]) -> TrackerPosition | None:
-    if event.get("type") not in (None, "location"):
-        return None
-
-    tracker_id = event.get("tracker_id")
-    latitude = event.get("lat")
-    longitude = event.get("lng")
-
-    if tracker_id is None or latitude is None or longitude is None:
-        return None
-
-    timestamp_value = event.get("timestamp")
-    timestamp = (
-        datetime.fromisoformat(timestamp_value.replace("Z", "+00:00"))
-        if timestamp_value
-        else None
-    )
-
-    return TrackerPosition(
-        tracker_id=int(tracker_id),
-        latitude=float(latitude),
-        longitude=float(longitude),
-        timestamp=timestamp,
-        speed=event.get("speed"),
-        heading=event.get("heading"),
-        altitude=event.get("altitude"),
-        raw=event,
-    )
-
-
 def _log_socket_failure(
     operation: str,
     ws_url: str,
@@ -85,16 +55,6 @@ def _log_socket_failure(
         sorted(tracker_ids),
         exc,
     )
-
-
-def position_in_scope(
-    event: dict[str, Any],
-    tracker_ids: set[int],
-) -> TrackerPosition | None:
-    position = parse_event(event)
-    if position is None or position.tracker_id not in tracker_ids:
-        return None
-    return position
 
 
 class NavixyWebSocketClient:
@@ -177,8 +137,25 @@ class NavixySubscription:
         self._idle_timeout = idle_timeout
         self._ws_url = ws_url
         self._pending: asyncio.Task[Any] | None = None
+        self._queued: list[TrackerPosition] = []
 
     async def receive(self) -> TrackerPosition | None:
+        if self._queued:
+            return self._queued.pop(0)
+        event = await self._next_event()
+        if event is None:
+            return None
+        positions = [
+            position
+            for position in parse_websocket_event(event)
+            if position.tracker_id in self._tracker_ids
+        ]
+        if not positions:
+            return None
+        self._queued.extend(positions[1:])
+        return positions[0]
+
+    async def _next_event(self) -> dict[str, Any] | None:
         try:
             if self._pending is None or self._pending.done():
                 self._pending = asyncio.create_task(self._socket.recv())
@@ -213,7 +190,7 @@ class NavixySubscription:
             return None
         if not isinstance(event, dict):
             return None
-        return position_in_scope(event, self._tracker_ids)
+        return event
 
     async def close(self) -> None:
         pending = self._pending

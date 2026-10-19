@@ -1,9 +1,7 @@
-from datetime import datetime
-from typing import Any
-
 import httpx
 
 from app.domain.entities import TrackerPosition
+from app.infrastructure.navixy_parse import parse_poll_response
 
 
 class NavixyApiClient:
@@ -37,31 +35,4 @@ class NavixyApiClient:
         )
         response.raise_for_status()
 
-        payload: dict[str, Any] = response.json()
-
-        if payload.get("success") is False:
-            raise RuntimeError(f"Navixy API error: {payload}")
-
-        state = payload["state"]
-        gps = state["gps"]
-        location = gps["location"]
-
-        updated = gps.get("updated")
-        timestamp = (
-            datetime.fromisoformat(updated.replace("Z", "+00:00"))
-            if updated
-            else None
-        )
-
-        return TrackerPosition(
-            tracker_id=tracker_id,
-            latitude=float(location["lat"]),
-            longitude=float(location["lng"]),
-            timestamp=timestamp,
-            speed=gps.get("speed"),
-            heading=gps.get("heading"),
-            altitude=gps.get("alt"),
-            connection_status=state.get("connection_status"),
-            movement_status=state.get("movement_status"),
-            raw=payload,
-        )
+        return parse_poll_response(response.json(), tracker_id)

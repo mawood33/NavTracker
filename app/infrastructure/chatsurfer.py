@@ -5,8 +5,8 @@ from typing import Any
 
 import httpx
 
-from app.domain.entities import TrackerPosition
 from app.domain.errors import PublicationError
+from app.domain.publication import OutboundMessage
 from .crypto import CryptoHandler
 from .limiter import RateLimiter
 
@@ -64,9 +64,9 @@ class ChatSurferApiClient:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def publish(self, position: TrackerPosition) -> dict[str, Any]:
+    async def publish(self, message: OutboundMessage) -> dict[str, Any]:
         try:
-            return await self._publish_message(position)
+            return await self._publish_message(message)
         except asyncio.CancelledError:
             raise
         except PublicationError:
@@ -74,15 +74,15 @@ class ChatSurferApiClient:
         except Exception as exc:
             raise PublicationError(
                 "ChatSurfer publish failed for "
-                f"tracker_id={position.tracker_id}: {exc}"
+                f"tracker_id={message.tracker_id}: {exc}"
             ) from exc
 
     async def _publish_message(
         self,
-        position: TrackerPosition,
+        outbound: OutboundMessage,
     ) -> dict[str, Any]:
         message = json.dumps(
-            position.as_dict(),
+            outbound.to_payload(),
             separators=(",", ":"),
         )
 
