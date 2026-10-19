@@ -88,7 +88,6 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
     chatsurfer = config.get("chatsurfer", {})
     crypto = config.get("crypto", {})
     
-<<<<<<< Updated upstream
     raw_tracker_ids = _env(
         "TRACKER_IDS",
         ",".join(map(str, navixy.get("tracker_ids", []))),
@@ -105,17 +104,6 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
                 "Invalid TRACKER_IDS="
                 f"{raw_tracker_ids!r}. Expected comma-separated integers."
             ) from None
-    _reject_legacy_source_mode(navixy)
-=======
-    tracker_ids = [
-        int(item.strip())
-        for item in _env(
-            "TRACKER_IDS",
-            ",".join(map(str, navixy.get("tracker_ids", []))),
-        ).split(",")
-        if item.strip()
-    ]
->>>>>>> Stashed changes
     navixy_mode = resolve_navixy_mode(
         os.getenv("NAVIXY_MODE"),
         navixy.get("mode"),
