@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from analytics.application.chat_read import ChatReadHealth
+from analytics.application.coordinates import load_override, override_file
 from analytics.application.hub import OutputHub
 from analytics.application.ports import (
     DocumentSink,
@@ -23,6 +24,7 @@ from analytics.domain.card_schema import SchemaCatalog, bundled_catalog
 from analytics.domain.catce import DEFAULT_CAT_CE_METERS
 from analytics.domain.confidence_text import DEFAULT_CONFIDENCE_TERMS, ConfidenceTerm
 from analytics.domain.coordcard import CoordCard, MgrsGrid
+from analytics.domain.coordinates import OutputCoordinates
 from analytics.domain.correlation import (
     Activity,
     Correlation,
@@ -77,6 +79,7 @@ class AnalyticsState:
     _taskings: tuple[Tasking, ...] = ()
     _published_levels: dict[str, int] = field(default_factory=dict)
     _published_phrases: dict[str, str] = field(default_factory=dict)
+    _output_override: OutputCoordinates | None = None
     _coord_card: CoordCard = field(default_factory=CoordCard)
     _coord_card_file: Path | None = None
     _schema_catalog: SchemaCatalog = field(default_factory=bundled_catalog)
@@ -192,6 +195,7 @@ def make_state(
     )
     state._coord_card_file = _coord_card_file(settings.coord_card_path)
     state._schema_path = schema_destination(settings)
+    state._output_override = load_override(override_file(settings))
     return state
 
 

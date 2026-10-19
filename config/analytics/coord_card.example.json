@@ -45,6 +45,18 @@
     "disagreement": "REPORTED {reported} ASSESSED {phrase} (FROM {ids})",
     "republish": "WAS {previous} NOW {text}"
   },
+  "output": {
+    "coordinate_format": "mgrs",
+    "mgrs_precision_m": 1,
+    "mgrs_spaces": false,
+    "latlon_decimals": 5,
+    "latlon_separator": "space",
+    "latlon_hemisphere": "suffix",
+    "types": {
+      "SITREP": {"coordinate_format": "latlon"},
+      "ADHOC": {"coordinate_format": "latlon"}
+    }
+  },
   "bullseye": {
     "name": ""
   },

@@ -3,10 +3,15 @@
 from datetime import UTC, datetime
 
 from analytics.application.analysis import _activity_document
+from analytics.application.coordinates import (
+    describe_resolution,
+    env_coordinates,
+)
 from analytics.application.dispatch import ingest_room_list
 from analytics.application.events import event_document
 from analytics.application.state import AnalyticsState
 from analytics.domain.aoi import AreaOfInterest
+from analytics.domain.coordinates import coordinate_document
 from analytics.domain.correlation import (
     Correlation,
     advance_for_gap,
@@ -73,6 +78,7 @@ class QueryService:
                     ),
                 }
             },
+            "output_coordinates": self.output_coordinates_document()["effective"],
         }
 
     def events(self) -> list[object]:
@@ -149,12 +155,28 @@ class QueryService:
             route_reports=state._msr_reports,
             tracks=state._fixes,
             levels=self.assessment_catalog(),
+            output_coordinates=self.output_coordinates_document(),
             suggested_fused=tuple(
                 fusion_document(item.suggested_fusion)
                 for item in state._correlations
                 if item.suggested_fusion is not None
             ),
         )
+
+    def output_coordinates_document(self) -> dict[str, object]:
+        state = self._state
+        card = state._coord_card.output_coordinates
+        override = state._output_override
+        spec, source = describe_resolution(state.settings, card, override)
+        env_source = "env" if state.settings.output_coord_configured else "default"
+        return {
+            "effective": coordinate_document(spec, source=source),
+            "override": None
+            if override is None
+            else coordinate_document(override, source="override"),
+            "coord_card": None if card is None else coordinate_document(card, source="coord_card"),
+            "env": coordinate_document(env_coordinates(state.settings), source=env_source),
+        }
 
     def assessment_catalog(self) -> LevelCatalog:
         state = self._state

@@ -115,3 +115,10 @@ class AnalyticsSettings:
     chat_failover_backoff_cap_seconds: float = 30.0
     chat_failover_probe_interval_seconds: float = 60.0
     max_fixes_per_vehicle: int = 100
+    output_coord_format: str = "mgrs"
+    output_mgrs_precision_m: int = 1
+    output_mgrs_spaces: bool = False
+    output_latlon_decimals: int = 5
+    output_latlon_separator: str = " "
+    output_latlon_hemisphere: str = "suffix"
+    output_coord_configured: bool = False

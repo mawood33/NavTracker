@@ -22,3 +22,18 @@ class MgrsLibrary:
         if not valid_position(point[0], point[1]):
             return None
         return point
+
+    def to_mgrs(self, latitude: float, longitude: float, precision_m: int) -> str | None:
+        digits = {1: 5, 10: 4, 100: 3}.get(precision_m)
+        if digits is None or not valid_position(latitude, longitude):
+            return None
+        try:
+            import mgrs
+        except ImportError:
+            return None
+        try:
+            text = mgrs.MGRS().toMGRS(float(latitude), float(longitude), MGRSPrecision=digits)
+        except Exception:
+            return None
+        compact = "".join(str(text).split()).upper()
+        return compact or None

@@ -43,6 +43,21 @@ assessment_text:
   correlated: "ASSESSED {phrase} (FROM {reported} {ids})"
   disagreement: "REPORTED {reported} ASSESSED {phrase} (FROM {ids})"
   republish: "WAS {previous} NOW {text}"
+# Published LOCATION. mgrs and decimal latlon map in ChatSurfer.
+# types overrides the default for one message type. TACREP covers
+# MTI, IMINT, ELINT, and FUSED. An analyst override replaces this.
+output:
+  coordinate_format: mgrs
+  mgrs_precision_m: 1
+  mgrs_spaces: false
+  latlon_decimals: 5
+  latlon_separator: space
+  latlon_hemisphere: suffix
+  types:
+    SITREP:
+      coordinate_format: latlon
+    ADHOC:
+      coordinate_format: latlon
 bullseye:
   name: ""
 rooms:

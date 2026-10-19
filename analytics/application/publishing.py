@@ -3,6 +3,7 @@
 import json
 import logging
 
+from analytics.application.coordinates import describe_resolution
 from analytics.application.dispatch import (
     active_publish_table,
     destination_rooms,
@@ -10,6 +11,7 @@ from analytics.application.dispatch import (
 from analytics.application.events import event_document
 from analytics.application.query import QueryService
 from analytics.application.state import AnalyticsState
+from analytics.domain.coordinates import format_point, rewrite_published_location
 from analytics.domain.level_assessment import (
     annotate_report,
     render_level,
@@ -109,13 +111,21 @@ class PublishService:
             identity = message.serial_full or message.source_message_id
             previous = state._published_phrases.get(identity, "")
             remark = render_level(view, catalog.wording, previous=previous)
+            body = _published_body(
+                state,
+                message.raw or identity,
+                message.location_text,
+                message.latitude,
+                message.longitude,
+                message.tacrep_type,
+            )
             notice = PublishNotice(
                 identity=identity,
                 confidence=phrase,
                 cat=message.cat_level,
                 types=(message.tacrep_type,) if message.tacrep_type else (),
                 sources=(message.source_id,) if message.source_id else (),
-                body=annotate_report(message.raw or identity, remark),
+                body=annotate_report(body, remark),
                 level_rank=PHRASE_RANK.get(phrase_key(phrase), 0),
             )
             rooms = destination_rooms(
@@ -156,4 +166,30 @@ class PublishService:
             )
             found.append((notice, rooms))
         return found
+
+
+def _published_body(
+    state: AnalyticsState,
+    raw: str,
+    location_text: str,
+    latitude: float,
+    longitude: float,
+    message_type: str,
+) -> str:
+    spec, _source = describe_resolution(
+        state.settings,
+        state._coord_card.output_coordinates,
+        state._output_override,
+        message_type,
+    )
+    if spec.format == "ddmm":
+        logger.warning(
+            "Output coordinate format ddmm is not recognized as a ChatSurfer point"
+        )
+    formatted = format_point(latitude, longitude, spec, state._mgrs)
+    if formatted.warning and spec.format != "ddmm":
+        logger.warning("Published location fallback: %s", formatted.warning)
+    if not formatted.text:
+        return raw
+    return rewrite_published_location(raw, location_text, formatted.text)
 

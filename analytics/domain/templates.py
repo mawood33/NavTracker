@@ -112,6 +112,7 @@ class Tasking:
     location_id: str = ""
     attributes: tuple[tuple[str, str], ...] = ()
     chat_message_id: str = ""
+    location_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ class _Draft:
     target_name: str = ""
     target_id: str = ""
     location_id: str = ""
+    location_text: str = ""
     tai: str = ""
     report_room: str = ""
     vacant: bool = False
@@ -581,6 +583,10 @@ def _location(text: str, draft: _Draft, name: str, grid: MgrsGrid | None) -> Non
             draft.values["mgrs"] = compact
     if point is not None:
         draft.latitude, draft.longitude = point
+        if parse_location(left.strip(), grid) is not None:
+            draft.location_text = left.strip()
+        else:
+            draft.location_text = body.strip()
     if elevation and elevation != "-":
         draft.values["elevation"] = elevation
         draft.attributes.append(("elevation", elevation))
@@ -699,6 +705,7 @@ def _tasking(
         raw=raw,
         location_id=draft.location_id,
         attributes=tuple(draft.attributes),
+        location_text=draft.location_text,
     )
 
 
@@ -726,6 +733,7 @@ def _message_from_task(task: Tasking, template: MessageTemplate) -> TacrepMessag
         report_room=task.report_room,
         classification=task.classification,
         vacant=task.vacant,
+        location_text=task.location_text,
     )
 
 
@@ -765,6 +773,7 @@ def _report_message(
         equipment=draft.equipment,
         bmoa=draft.location_id,
         classification=draft.classification,
+        location_text=draft.location_text,
     )
 
 

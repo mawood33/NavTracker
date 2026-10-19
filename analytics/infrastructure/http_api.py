@@ -38,6 +38,14 @@ class HealthView(Protocol):
         """Liveness payload."""
 
 
+class SettingsView(Protocol):
+    def output_coordinates_document(self) -> Mapping[str, object]:
+        """Effective published coordinate format and the analyst override."""
+
+    def set_output_coordinates(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        """Set the analyst override, or revert it with ``use_coord_card``."""
+
+
 class SiteView(Protocol):
     def sites(self) -> list[Site]:
         """Loaded known sites."""
@@ -169,6 +177,7 @@ class ExportView(Protocol):
 
 class AnalyticsSnapshot(
     HealthView,
+    SettingsView,
     SiteView,
     RouteView,
     IngestView,
@@ -202,6 +211,10 @@ def route_request(
             return _error(denied, "unauthorized", "unauthorized")
     if method == "GET" and target == "/health":
         return _json(200, dict(snapshot.health()))
+    if method == "GET" and target == "/v1/settings/output-coordinates":
+        return _json(200, dict(snapshot.output_coordinates_document()))
+    if method in {"PUT", "POST"} and target == "/v1/settings/output-coordinates":
+        return _output_coordinates(body, snapshot)
     if method == "GET" and target == "/events":
         return _json(200, {"events": snapshot.events()})
     if method == "GET" and target == "/aois":
@@ -316,6 +329,19 @@ def _api_routes(
     except RoutingError as exc:
         status = 400 if exc.code in {"rail_unsupported", "invalid_speed", "missing_site"} else 404
         return _error(status, str(exc), exc.code)
+
+
+def _output_coordinates(
+    body: bytes,
+    snapshot: SettingsView,
+) -> tuple[int, dict[str, object] | str, str]:
+    payload = _object(body)
+    if payload is None:
+        return _error(400, "Expected a JSON object.", "invalid_json")
+    try:
+        return _json(200, dict(snapshot.set_output_coordinates(payload)))
+    except ValueError as exc:
+        return _error(400, str(exc), "invalid_coordinates")
 
 
 def _verify_site(

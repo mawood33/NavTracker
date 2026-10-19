@@ -161,6 +161,7 @@ class TacrepMessage:
     vacant_weight: float = 0.25
     history: tuple["TacrepMessage", ...] = ()
     chat_message_id: str = ""
+    location_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -288,6 +289,7 @@ def parse_tacrep_line(
         tacrep_type=identity[4],
         block_label=identity[5],
         block_warning=identity[6],
+        location_text=parts[2].strip(),
     )
 
 

@@ -66,11 +66,68 @@ Room routing uses the assessed phrase and the CAT. A higher assessed
 level is published again. The new remark names the previous phrase and
 the new one.
 
+## Published location
+
+ChatSurfer plots a point from MGRS and from decimal degrees. The stored
+message and its evidence keep the text as received. Only the published
+copy changes. The default is 1 m MGRS with no spaces.
+
+The received point `N6919 W11919` (69°19' N, 119°19' W) publishes as:
+
+```text
+HAWK // G-501 // POSS LOW TEL // 11WMS0869991399 // TAI // 1919Z // CAT IV SINGLE SOURCE POSS LOW
+```
+
+The same message with `latlon`, five decimals, a space, and hemisphere
+suffix letters:
+
+```text
+HAWK // G-501 // POSS LOW TEL // 69.31667N 119.31667W // TAI // 1919Z // CAT IV SINGLE SOURCE POSS LOW
+```
+
+`69.31667N,119.31667W` is the comma separator. Signed decimals look like
+`69.31667 -119.31667`. Spaced 1 m MGRS is `11W MS 08699 91399`. Input
+still accepts hemisphere `DDMM.MM`, decimal degrees, and MGRS. `ddmm`
+is written only when a card, environment, or analyst selects it, and
+that choice logs a warning because ChatSurfer does not map it.
+
+Precedence is the analyst override, then `output` on the coord card
+(a `types` entry such as `SITREP` or `ADHOC`; `TACREP` also covers MTI,
+IMINT, ELINT, and FUSED), then the environment, then `mgrs`.
+
+| Key | Default |
+| --- | --- |
+| `ANALYTICS_OUTPUT_COORD_FORMAT` / `output.coordinate_format` | `mgrs` (`latlon`, `ddmm`) |
+| `ANALYTICS_OUTPUT_MGRS_PRECISION_M` / `output.mgrs_precision_m` | `1` (also `10`, `100`) |
+| `ANALYTICS_OUTPUT_MGRS_SPACES` / `output.mgrs_spaces` | `false` |
+| `ANALYTICS_OUTPUT_LATLON_DECIMALS` / `output.latlon_decimals` | `5` (0–8) |
+| `ANALYTICS_OUTPUT_LATLON_SEPARATOR` / `output.latlon_separator` | `space` (`comma`) |
+| `ANALYTICS_OUTPUT_LATLON_HEMISPHERE` / `output.latlon_hemisphere` | `suffix` (`signed`) |
+
+`GET /v1/settings/output-coordinates` returns `effective`, `override`,
+`coord_card`, and `env`. `GET /health` includes the effective object as
+`output_coordinates`. The WebSocket snapshot carries the full document,
+and a diff includes `output_coordinates` when it changes.
+
+`PUT` or `POST /v1/settings/output-coordinates` needs the write token.
+The body uses the same keys as the card (`coordinate_format`,
+`mgrs_precision_m`, `mgrs_spaces`, `latlon_decimals`, `latlon_separator`,
+`latlon_hemisphere`, and optional `types`). `{"use_coord_card": true}`
+clears the override. The file is `output-coordinates.json` in the
+reference directory and is loaded again on startup.
+
+TransloadOracle reads `effective.format` and `effective.source` to show
+the analyst toggle, and sends the PUT to change or revert it. A failed
+MGRS conversion, including a polar point the library cannot encode,
+publishes decimal lat/lon and logs a warning. UPS strings are used when
+encoding succeeds.
+
 ## Published ChatSurfer remarks
 
-The original TACREP, SITREP, or FUSED line is kept. The remark is
-appended to the last `//` field, or after a comma when the line has no
-`//`. The remark itself never contains `//`.
+The original TACREP, SITREP, or FUSED line is kept. The location token
+is replaced first. The remark is then appended to the last `//` field,
+or after a comma when the line has no `//`. The remark itself never
+contains `//`.
 
 Wording comes from `assessment_text` on the coord card. The default
 templates are:
@@ -89,19 +146,19 @@ Placeholders are `phrase`, `reported`, `ids`, `count`, `previous`, and
 Examples, using the default templates:
 
 ```text
-HAWK // G-501 // POSS LOW TEL // N6919 W11919 // TAI // 1919Z // CAT IV SINGLE SOURCE POSS LOW
+HAWK // G-501 // POSS LOW TEL // 11WMS0869991399 // TAI // 1919Z // CAT IV SINGLE SOURCE POSS LOW
 ```
 
 ```text
-HAWK // G-501 // POSS LOW TEL // N6919 W11919 // TAI // 1919Z // CAT IV ASSESSED PROB (FROM POSS LOW G-501 + J-401 + I-103A)
+HAWK // G-501 // POSS LOW TEL // 11WMS0869991399 // TAI // 1919Z // CAT IV ASSESSED PROB (FROM POSS LOW G-501 + J-401 + I-103A)
 ```
 
 ```text
-HAWK // G-501 // CONFIRMED TEL // N6919 W11919 // TAI // 1919Z // CAT IV REPORTED CONFIRMED ASSESSED PROB (FROM G-501 + J-401)
+HAWK // G-501 // CONFIRMED TEL // 11WMS0869991399 // TAI // 1919Z // CAT IV REPORTED CONFIRMED ASSESSED PROB (FROM G-501 + J-401)
 ```
 
 ```text
-HAWK // G-501 // POSS LOW TEL // N6919 W11919 // TAI // 1919Z // CAT IV WAS POSS LOW NOW ASSESSED PROB (FROM POSS LOW G-501 + J-401 + I-103A)
+HAWK // G-501 // POSS LOW TEL // 11WMS0869991399 // TAI // 1919Z // CAT IV WAS POSS LOW NOW ASSESSED PROB (FROM POSS LOW G-501 + J-401 + I-103A)
 ```
 
 A SITREP with no `//` gains the same remark after a comma.

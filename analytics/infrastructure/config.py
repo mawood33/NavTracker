@@ -15,6 +15,7 @@ from analytics.infrastructure.config_coord import coord_settings
 from analytics.infrastructure.config_grid import grid_settings
 from analytics.infrastructure.config_http import http_settings
 from analytics.infrastructure.config_map import map_settings
+from analytics.infrastructure.config_output import output_coord_settings
 from analytics.infrastructure.config_rooms import room_settings
 from analytics.infrastructure.config_sources import source_settings
 from analytics.infrastructure.config_values import _bool_setting, _choice, _mapping
@@ -112,6 +113,7 @@ def load_analytics_settings(
     values.update(grid_settings(analytics))
     values.update(map_settings(analytics))
     values.update(coord_settings(analytics))
+    values.update(output_coord_settings(analytics))
     values.update(room_settings(analytics))
     settings = AnalyticsSettings(**values)  # type: ignore[arg-type]
     if settings.frontend_enabled and not settings.frontend_ingest_url:

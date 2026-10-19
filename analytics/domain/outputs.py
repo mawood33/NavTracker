@@ -130,6 +130,7 @@ def build_snapshot(
     suggested_fused: Sequence[Mapping[str, object]] = (),
     tracks: Sequence[GpsFix] = (),
     levels: LevelCatalog | None = None,
+    output_coordinates: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     evidence = _evidence_rows(sites, levels)
     return {
@@ -147,6 +148,7 @@ def build_snapshot(
         "tracks": track_rows(tracks),
         "evidence": evidence,
         "suggested_fused": [dict(item) for item in suggested_fused],
+        "output_coordinates": dict(output_coordinates or {}),
     }
 
 
@@ -169,7 +171,13 @@ def diff_documents(
     changes.extend(_track_changes(previous.get("tracks"), current.get("tracks")))
     previous_fused = previous.get("suggested_fused")
     current_fused = current.get("suggested_fused")
-    if not changes and previous_fused == current_fused:
+    previous_coordinates = previous.get("output_coordinates")
+    current_coordinates = current.get("output_coordinates")
+    if (
+        not changes
+        and previous_fused == current_fused
+        and previous_coordinates == current_coordinates
+    ):
         return None
     document = {
         "schema": SCHEMA_NAME,
@@ -182,6 +190,8 @@ def diff_documents(
     }
     if previous_fused != current_fused:
         document["suggested_fused"] = current_fused
+    if previous_coordinates != current_coordinates:
+        document["output_coordinates"] = current_coordinates
     return document
 
 
