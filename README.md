@@ -39,7 +39,13 @@ Backoff after failure `n` (1-based) sleeps `min(cap, initial * 2^(n-1))` seconds
 
 Values that are not positive, or a backoff cap below the initial delay, fail at startup. The environment variable overrides the YAML key.
 
-See `.env.example` for a copy-paste starting point. Other ChatSurfer and certificate settings live in `config/<APP_ENV>.yaml` and can be overridden by environment variables of the same names already used by `load_settings`.
+See `.env.example` for every setting `load_settings` reads. A value in `.env` overrides the same key in `config/<APP_ENV>.yaml`.
+
+## Encryption
+
+`MODE` is `pem`, `ssh`, or `fernet` (`crypto.mode` in YAML). Startup checks only the material that mode uses. The error names the mode and the missing setting.
+
+`pem` and `ssh` require `ENCRYPTION_CERT`. They do not require `FERNET_KEY` and do not validate it, so a blank or malformed Fernet key is ignored. `fernet` requires `FERNET_KEY` and passes that key into `CryptoHandler`. A missing key, a blank value, or the YAML literal `None` (PyYAML loads that literal as the string `"None"`, which is unset) fails at startup. A value that is not a url-safe base64-encoded 32-byte key fails only in fernet mode. The process does not generate a key.
 
 ## Run
 
@@ -49,7 +55,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-`APP_ENV` selects `config/development.yaml`, `config/staging.yaml`, or `config/production.yaml` (default `development`). Pass it in `.env` or the process environment of the container.
+`APP_ENV` selects `config/development.yaml`, `config/staging.yaml`, or `config/production.yaml`. `docker-compose.yml` passes `APP_ENV` into the container and uses `development` when the variable is unset. `APP_ENV=staging docker compose up --build` therefore loads the staging file.
 
 ## Tests
 

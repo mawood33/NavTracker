@@ -12,6 +12,108 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 logger = logging.getLogger(__name__)
 
+
+def _read_public_material(mode: str, path: str) -> bytes:
+    file = Path(path)
+    if not file.is_file():
+        raise RuntimeError(
+            f"{mode} mode requires ENCRYPTION_CERT. No file at {path}."
+        )
+    try:
+        return file.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(
+            f"{mode} mode requires ENCRYPTION_CERT. Could not read {path}."
+        ) from exc
+
+
+FERNET_KEY_REQUIRED = (
+    "fernet mode requires FERNET_KEY. "
+    "Set it to a url-safe base64-encoded 32-byte key. "
+    "A blank value or the YAML literal None is unset, not a key."
+)
+FERNET_KEY_INVALID = (
+    "fernet mode requires a valid FERNET_KEY. "
+    "Expected a url-safe base64-encoded 32-byte key."
+)
+
+_UNSET_FERNET_VALUES = {"", "none", "null"}
+
+
+def parse_fernet_key(value: bytes | str | None) -> bytes | None:
+    """Return a Fernet key, or None when the setting is unset.
+
+    PyYAML loads `fernet_key: None` as the string "None", not as null.
+    That placeholder is unset. A present value must already be a Fernet key.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        try:
+            text = value.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(FERNET_KEY_INVALID) from exc
+    else:
+        text = value
+    text = text.strip()
+    if text.lower() in _UNSET_FERNET_VALUES:
+        return None
+    key = text.encode("ascii")
+    try:
+        Fernet(key)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(FERNET_KEY_INVALID) from exc
+    return key
+
+
+def fernet_key_for_mode(mode: str, value: bytes | str | None) -> bytes | None:
+    """Return a Fernet key when that mode is selected.
+
+    pem and ssh do not read this value. Callers must not pass it through
+    a parser first: an unused FERNET_KEY is not validated.
+    """
+    if mode != "fernet":
+        return None
+    key = parse_fernet_key(value)
+    if key is None:
+        raise RuntimeError(FERNET_KEY_REQUIRED)
+    return key
+
+
+def require_public_material(mode: str, public_key_path: str | None) -> str | None:
+    """pem and ssh encrypt with ENCRYPTION_CERT. Fernet does not."""
+    if mode == "fernet":
+        return None
+    path = (public_key_path or "").strip()
+    if not path:
+        raise RuntimeError(f"{mode} mode requires ENCRYPTION_CERT.")
+    return path
+
+
+def build_crypto_handler(
+    *,
+    encryption_required: bool,
+    mode: str,
+    public_key_path: str | None,
+    fernet_key: bytes | str | None,
+) -> "CryptoHandler | None":
+    if not encryption_required:
+        return None
+    if mode == "ssh":
+        return CryptoHandler(
+            mode="ssh",
+            public_key_path=public_key_path,
+            private_key_path=None,
+        )
+    if mode == "fernet":
+        return CryptoHandler(mode="fernet", fernet_key=fernet_key)
+    return CryptoHandler(
+        mode="pem",
+        public_key_path=public_key_path,
+        private_key_path=None,
+    )
+
+
 class CryptoHandler:
     def __init__(
         self,
@@ -36,19 +138,15 @@ class CryptoHandler:
             if public_key_path or private_key_path:
                 raise ValueError("Fernet mode does not use public/private key paths")
 
-            if fernet_key is None:
-                self.fernet_key = Fernet.generate_key()
-            elif isinstance(fernet_key, str):
-                self.fernet_key = fernet_key.encode("ascii")
-            else:
-                self.fernet_key = fernet_key
-
+            self.fernet_key = fernet_key_for_mode(mode, fernet_key)
             self.fernet = Fernet(self.fernet_key)
             return
 
-        if public_key_path:
-            public_bytes = Path(public_key_path).read_bytes()
-
+        checked_path = require_public_material(mode, public_key_path)
+        if checked_path is None:
+            raise RuntimeError(f"{mode} mode requires ENCRYPTION_CERT.")
+        public_bytes = _read_public_material(mode, checked_path)
+        try:
             if mode == "ssh":
                 self.public_key = serialization.load_ssh_public_key(public_bytes)
             elif b"-----BEGIN CERTIFICATE-----" in public_bytes:
@@ -57,9 +155,15 @@ class CryptoHandler:
                 ).public_key()
             else:
                 self.public_key = serialization.load_pem_public_key(public_bytes)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(
+                f"{mode} mode requires a valid ENCRYPTION_CERT."
+            ) from exc
 
-            if not isinstance(self.public_key, rsa.RSAPublicKey):
-                raise TypeError("RSA public keys are required for this encryption method")
+        if not isinstance(self.public_key, rsa.RSAPublicKey):
+            raise RuntimeError(
+                f"{mode} mode requires a valid ENCRYPTION_CERT."
+            )
 
         if private_key_path:
             private_bytes = Path(private_key_path).read_bytes()

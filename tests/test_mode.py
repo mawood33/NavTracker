@@ -80,6 +80,8 @@ def _scrub_env(monkeypatch):
         "NAVIXY_FAILOVER_PROBE_INTERVAL_SECONDS",
         "NAVIXY_FAILOVER_HEALTHY_WINDOW_SECONDS",
         "APP_ENV",
+        "MODE",
+        "FERNET_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("NAVIXY_API_KEY", "navixy-key")
