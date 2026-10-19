@@ -132,10 +132,11 @@ Activities move `pre_launch_hide` → `launch` → `hide_after_launch` → `tran
 
 ### Outputs
 
-- `GET /ws` sends a versioned snapshot (`navtracker.analytics` version 1) and then diffs.
-- `GET /ogc` is an OGC API - Features landing page. Collections are sites, cells, routes, evidence, and itineraries. Item requests accept `bbox` and `datetime`.
+- `GET /ws` sends a versioned snapshot (`navtracker.analytics` version 2) and then diffs. Version 2 is documented in `docs/analytics-document.md`. `status` on a site is operational (`unknown`, `active`, or `inactive`). `assessment` is `possible`, `probable`, or `verified` (`confirmed` is still the stored value and is accepted on input). `confidence_band` repeats the version 1 `status` (`possible`, `probable`, or `confirmed`) and is deprecated. Diffs use `op` `upsert` or `remove` for sites, cells, routes, and tracks. A cell includes its hex `boundary` and a route includes its `points`, both as latitude, longitude pairs.
+- `tracks` on the snapshot are GPS fixes (`vehicle_id`, `lat`, `lon`, `timestamp`, `speed` in meters per second, `heading`, `origin_id`). They are bounded by `ANALYTICS_FIX_RETENTION_SECONDS` and `ANALYTICS_MAX_FIXES_PER_VEHICLE` (default 100, `0` keeps every fix that survived retention). `GET /tracks` and `GET /api/tracks` return the same array. A `retract` lists the removed tracks and drops any fix whose `origin_id` is that message id, including from the snapshot a later client receives.
+- `GET /ogc` is an OGC API - Features landing page. Collections are sites, cells, routes, tracks, evidence, and itineraries. Item requests accept `bbox` and `datetime`.
 - `GET /geojson`, `GET /heatmap`, and `GET /kml` export the current picture. `GET /kml/networklink` is a KML NetworkLink pointed at `/kml`.
-- `GET /api/sites` returns `{sites}` with operational `status` and assessment `possible`, `probable`, or `verified`.
+- `GET /api/sites` and `GET /sites` return the same site fields: `status`, `assessment`, `confidence`, `types`, and the deprecated `confidence_band`.
 - `POST /api/routes` returns `{provider, routes}`.
 - `POST /v1/events`, `POST /v1/events/tacrep`, and `POST /v1/events/batch` accept TACREP.
 - `GET /v1/events/correlations` and `GET /v1/activities` return the current groups. `GET /v1/activities/stream` sends one server-sent event. Clients can poll `/v1/activities` every 10 seconds.

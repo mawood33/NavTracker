@@ -153,6 +153,9 @@ class AnalyticsService:
     def msr_reports(self) -> dict[str, tuple[Report, ...]]:
         return self._query.msr_reports()
 
+    def tracks(self) -> list[GpsFix]:
+        return self._query.tracks()
+
     def public_base(self) -> str:
         return self._query.public_base()
 

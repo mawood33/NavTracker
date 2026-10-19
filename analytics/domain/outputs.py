@@ -9,7 +9,7 @@ and ``xyz`` repeats an operator URL. The default view is the contiguous
 United States at zoom 4.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 
 from analytics.domain.correlation import SuggestedFusion
@@ -17,9 +17,10 @@ from analytics.domain.grid import CellActivity
 from analytics.domain.reference import Msr, Site
 from analytics.domain.reports import Report, report_document
 from analytics.domain.routing import VehicleProfile
+from analytics.domain.tracks import GpsFix, dedupe_fixes
 
 SCHEMA_NAME = "navtracker.analytics"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 OSM_ATTRIBUTION = "© OpenStreetMap contributors"
 MAPBOX_STYLE = "mapbox/dark-v11"
@@ -121,6 +122,7 @@ def build_snapshot(
     routes: Sequence[Msr],
     route_reports: Mapping[str, Sequence[Report]],
     suggested_fused: Sequence[Mapping[str, object]] = (),
+    tracks: Sequence[GpsFix] = (),
 ) -> dict[str, object]:
     evidence = _evidence_rows(sites)
     return {
@@ -135,6 +137,7 @@ def build_snapshot(
         "routes": [
             _route_row(route, route_reports.get(route.name, ())) for route in routes
         ],
+        "tracks": track_rows(tracks),
         "evidence": evidence,
         "suggested_fused": [dict(item) for item in suggested_fused],
     }
@@ -156,6 +159,7 @@ def diff_documents(
     changes.extend(_site_changes(previous.get("sites"), current.get("sites")))
     changes.extend(_cell_changes(previous.get("cells"), current.get("cells")))
     changes.extend(_route_changes(previous.get("routes"), current.get("routes")))
+    changes.extend(_track_changes(previous.get("tracks"), current.get("tracks")))
     previous_fused = previous.get("suggested_fused")
     current_fused = current.get("suggested_fused")
     if not changes and previous_fused == current_fused:
@@ -205,7 +209,9 @@ def landing_page(
         )
     return {
         "title": "NavTracker analytics",
-        "description": "Sites, hex activity, MSR corridors, evidence, and travel estimates.",
+        "description": (
+            "Sites, hex activity, MSR corridors, GPS tracks, evidence, and travel estimates."
+        ),
         "links": links,
         "basemap": dict(basemap),
         "routing": dict(routing),
@@ -220,6 +226,7 @@ def items_document(
     route_reports: Mapping[str, Sequence[Report]],
     bbox: tuple[float, float, float, float] | None,
     interval: tuple[datetime | None, datetime | None] | None = None,
+    tracks: Sequence[GpsFix] = (),
 ) -> dict[str, object]:
     """GeoJSON features for one OGC collection.
 
@@ -251,6 +258,13 @@ def items_document(
                     features.append(_route_feature(route, reports))
     elif name == "evidence":
         features.extend(_evidence_features(sites, bbox, interval))
+    elif name == "tracks":
+        features.extend(
+            _track_feature(fix)
+            for fix in dedupe_fixes(tracks)
+            if _point_inside(fix.latitude, fix.longitude, bbox)
+            and _matches_time(fix.timestamp, interval)
+        )
     return {
         "type": "FeatureCollection",
         "numberReturned": len(features),
@@ -339,31 +353,72 @@ def _private_tiles(tile_url: str) -> bool:
     )
 
 
-def _site_row(site: Site) -> dict[str, object]:
+def site_fields(site: Site) -> dict[str, object]:
+    """Site fields shared by HTTP, the WebSocket document, and OGC.
+
+    ``status`` is operational activity. ``assessment`` is the confidence
+    band, with ``confirmed`` exported as ``verified``. ``confidence_band``
+    is the schema 1 ``status`` value and is deprecated.
+    """
+
+    band = site.status if site.status in {"possible", "probable", "confirmed"} else "possible"
+    assessment = "verified" if band == "confirmed" else band
+    activity = site.activity_status
+    if activity not in {"unknown", "active", "inactive"}:
+        activity = "unknown"
     return {
+        "id": site.name,
         "name": site.name,
-        "types": sorted(site.site_types),
-        "status": site.status,
-        "confidence": site.confidence,
-        "origin": site.origin,
         "latitude": site.latitude,
         "longitude": site.longitude,
-        "evidence": [
-            {
-                "kind": item.kind,
-                "weight": item.weight,
-                "detail": item.detail,
-                "site_type": item.site_type,
-                "source": item.source,
-                "layer": item.layer,
-                "message_id": item.message_id,
-                "observed_at": None
-                if item.observed_at is None
-                else item.observed_at.isoformat(),
-            }
-            for item in site.evidence
-        ],
+        "status": activity,
+        "assessment": assessment,
+        "confidence": site.confidence,
+        "confidence_band": band,
+        "types": sorted(site.site_types),
+        "bmoa": site.moa,
     }
+
+
+def track_document(fix: GpsFix) -> dict[str, object]:
+    """One GPS fix. ``speed`` is meters per second. ``lat`` and ``lon`` are degrees."""
+
+    return {
+        "vehicle_id": fix.vehicle_id,
+        "lat": fix.latitude,
+        "lon": fix.longitude,
+        "timestamp": fix.timestamp.isoformat(),
+        "speed": fix.speed_mps,
+        "heading": fix.heading,
+        "origin_id": fix.origin_id,
+    }
+
+
+def track_rows(fixes: Sequence[GpsFix]) -> list[dict[str, object]]:
+    rows = [track_document(fix) for fix in dedupe_fixes(fixes)]
+    rows.sort(key=lambda item: (str(item["vehicle_id"]), str(item["timestamp"])))
+    return rows
+
+
+def _site_row(site: Site) -> dict[str, object]:
+    document = site_fields(site)
+    document["origin"] = site.origin
+    document["evidence"] = [
+        {
+            "kind": item.kind,
+            "weight": item.weight,
+            "detail": item.detail,
+            "site_type": item.site_type,
+            "source": item.source,
+            "layer": item.layer,
+            "message_id": item.message_id,
+            "observed_at": None
+            if item.observed_at is None
+            else item.observed_at.isoformat(),
+        }
+        for item in site.evidence
+    ]
+    return document
 
 
 def _cell_row(cell: CellActivity) -> dict[str, object]:
@@ -374,6 +429,7 @@ def _cell_row(cell: CellActivity) -> dict[str, object]:
         "on_msr": cell.on_msr,
         "latitude": cell.latitude,
         "longitude": cell.longitude,
+        "boundary": [[point[0], point[1]] for point in cell.boundary],
         "reports": [report_document(report) for report in cell.reports],
     }
 
@@ -381,7 +437,17 @@ def _cell_row(cell: CellActivity) -> dict[str, object]:
 def _route_row(route: Msr, reports: Sequence[Report]) -> dict[str, object]:
     return {
         "name": route.name,
+        "points": [[point[0], point[1]] for point in route.points],
         "reports": [report_document(report) for report in reports],
+    }
+
+
+def _track_feature(fix: GpsFix) -> dict[str, object]:
+    return {
+        "type": "Feature",
+        "id": f"{fix.vehicle_id}|{fix.timestamp.isoformat()}",
+        "geometry": {"type": "Point", "coordinates": [fix.longitude, fix.latitude]},
+        "properties": track_document(fix),
     }
 
 
@@ -546,15 +612,67 @@ def _point_inside(
 
 
 def _site_changes(previous: object, current: object) -> list[dict[str, object]]:
-    return _keyed_changes(previous, current, "name", "site", ("status", "confidence", "types"))
+    return _keyed_changes(
+        previous,
+        current,
+        "name",
+        "site",
+        ("status", "assessment", "confidence", "types"),
+    )
 
 
 def _cell_changes(previous: object, current: object) -> list[dict[str, object]]:
-    return _keyed_changes(previous, current, "cell_id", "cell", ("score", "hotspot"))
+    return _keyed_changes(
+        previous,
+        current,
+        "cell_id",
+        "cell",
+        ("score", "hotspot", "boundary"),
+    )
 
 
 def _route_changes(previous: object, current: object) -> list[dict[str, object]]:
-    return _keyed_changes(previous, current, "name", "route", ("reports",))
+    return _keyed_changes(previous, current, "name", "route", ("points", "reports"))
+
+
+def _track_changes(previous: object, current: object) -> list[dict[str, object]]:
+    before = _indexed(previous, _track_identity)
+    after = _indexed(current, _track_identity)
+    changes: list[dict[str, object]] = []
+    for key, item in before.items():
+        if key not in after:
+            changes.append(
+                {
+                    "op": "remove",
+                    "kind": "track",
+                    "vehicle_id": item.get("vehicle_id"),
+                    "timestamp": item.get("timestamp"),
+                    "origin_id": item.get("origin_id", ""),
+                }
+            )
+    for key, item in after.items():
+        prior = before.get(key)
+        if prior is None or prior != item:
+            changes.append(
+                {
+                    "op": "upsert",
+                    "kind": "track",
+                    "vehicle_id": item.get("vehicle_id"),
+                    "timestamp": item.get("timestamp"),
+                    "item": item,
+                }
+            )
+    return changes
+
+
+def _track_identity(item: Mapping[str, object]) -> str | None:
+    vehicle = item.get("vehicle_id")
+    timestamp = item.get("timestamp")
+    if not isinstance(vehicle, str) or not vehicle:
+        return None
+    if not isinstance(timestamp, str) or not timestamp:
+        return None
+    return f"{vehicle}|{timestamp}"
 
 
 def _keyed_changes(
@@ -564,19 +682,42 @@ def _keyed_changes(
     kind: str,
     fields: tuple[str, ...],
 ) -> list[dict[str, object]]:
-    if not isinstance(previous, list) or not isinstance(current, list):
-        return []
-    before = {
-        str(item.get(key_name)): item
-        for item in previous
-        if isinstance(item, dict) and item.get(key_name) is not None
-    }
+    identity = _field_identity(key_name)
+    before = _indexed(previous, identity)
+    after = _indexed(current, identity)
     changes: list[dict[str, object]] = []
-    for item in current:
-        if not isinstance(item, dict) or item.get(key_name) is None:
-            continue
-        key = str(item[key_name])
+    for key in before:
+        if key not in after:
+            changes.append({"op": "remove", "kind": kind, key_name: key})
+    for key, item in after.items():
         prior = before.get(key)
         if prior is None or any(prior.get(field) != item.get(field) for field in fields):
-            changes.append({"kind": kind, key_name: key, "item": item})
+            changes.append({"op": "upsert", "kind": kind, key_name: key, "item": item})
     return changes
+
+
+def _field_identity(key_name: str) -> Callable[[Mapping[str, object]], str | None]:
+    def identity(item: Mapping[str, object]) -> str | None:
+        value = item.get(key_name)
+        if value is None or value == "":
+            return None
+        return str(value)
+
+    return identity
+
+
+def _indexed(
+    rows: object,
+    identity: Callable[[Mapping[str, object]], str | None],
+) -> dict[str, dict[str, object]]:
+    if not isinstance(rows, list):
+        return {}
+    found: dict[str, dict[str, object]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        key = identity(item)
+        if key is None:
+            continue
+        found[key] = item
+    return found

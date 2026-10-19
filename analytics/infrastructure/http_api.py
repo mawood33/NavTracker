@@ -22,10 +22,13 @@ from analytics.domain.outputs import (
     landing_page,
     parse_bbox,
     parse_datetime_interval,
+    site_fields,
+    track_rows,
 )
 from analytics.domain.reference import Evidence, Msr, Site
 from analytics.domain.reports import Report
 from analytics.domain.routing import RoutingError
+from analytics.domain.tracks import GpsFix
 
 
 class HealthView(Protocol):
@@ -140,6 +143,9 @@ class ExportView(Protocol):
     def cells(self) -> list[CellActivity]:
         """Hex cells with activity scores."""
 
+    def tracks(self) -> list[GpsFix]:
+        """GPS fixes still inside retention and the per-vehicle cap."""
+
     def msr_reports(self) -> Mapping[str, tuple[Report, ...]]:
         """Reports correlated to each MSR name."""
 
@@ -197,6 +203,8 @@ def route_request(
         return _json(200, {"areas": [_area(area) for area in snapshot.areas()]})
     if method == "GET" and target == "/sites":
         return _json(200, {"sites": [_site(site) for site in snapshot.sites()]})
+    if method == "GET" and target in {"/tracks", "/api/tracks"}:
+        return _json(200, {"tracks": track_rows(snapshot.tracks())})
     if method == "GET" and target == "/msrs":
         return _json(200, {"msrs": [_msr(route) for route in snapshot.routes()]})
     if method == "GET" and target == "/cells":
@@ -274,7 +282,7 @@ def route_request(
     return _json(404, {"error": "not found"})
 
 
-_COLLECTIONS = ("sites", "cells", "routes", "evidence", "itineraries")
+_COLLECTIONS = ("sites", "cells", "routes", "tracks", "evidence", "itineraries")
 
 
 def _api_routes(
@@ -483,6 +491,7 @@ def _ogc_collection(
                 snapshot.msr_reports(),
                 bbox,
                 interval,
+                snapshot.tracks() if name == "tracks" else (),
             ),
         )
     return _json(404, {"error": "not found"})
@@ -527,20 +536,14 @@ def encode_response(
 
 
 def _site(site: Site) -> dict[str, object]:
-    return {
-        "name": site.name,
-        "types": sorted(site.site_types),
-        "status": site.status,
-        "confidence": site.confidence,
-        "origin": site.origin,
-        "latitude": site.latitude,
-        "longitude": site.longitude,
-        "moa": site.moa,
-        "complex": site.complex_name,
-        "mgrs": site.mgrs,
-        "polygon": [list(point) for point in site.polygon],
-        "evidence": [_evidence(item) for item in site.evidence],
-    }
+    document = site_fields(site)
+    document["origin"] = site.origin
+    document["moa"] = site.moa
+    document["complex"] = site.complex_name
+    document["mgrs"] = site.mgrs
+    document["polygon"] = [list(point) for point in site.polygon]
+    document["evidence"] = [_evidence(item) for item in site.evidence]
+    return document
 
 
 def _evidence(item: Evidence) -> dict[str, object]:

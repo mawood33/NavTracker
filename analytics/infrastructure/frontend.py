@@ -1,9 +1,11 @@
 """Push adapter for an optional frontend.
 
-The TransloadOracle frontend contract was not readable from this
-environment. This adapter posts NavTracker analytics documents
-(schema ``navtracker.analytics``, version 1) to a configured ingest URL.
-It does not open a connection until ``publish`` is called.
+Posts the same ``navtracker.analytics`` schema 2 documents the WebSocket
+sends: snapshots, diffs, and retracts. A site has operational ``status``
+(``unknown``, ``active``, ``inactive``), ``assessment``
+(``possible``, ``probable``, ``verified``), numeric ``confidence``, and
+``types``. GPS fixes are ``tracks``. A diff ``op`` is ``upsert`` or
+``remove``. It does not open a connection until ``publish`` is called.
 """
 
 import json

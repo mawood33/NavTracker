@@ -49,7 +49,7 @@
           list.replaceChildren();
           for (const site of sites) {
             const item = document.createElement("li");
-            item.textContent = site.name + " " + site.status + " " + site.confidence;
+            item.textContent = site.name + " " + site.assessment + " " + site.status + " " + site.confidence;
             list.appendChild(item);
           }
         }

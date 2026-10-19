@@ -5,6 +5,7 @@ from xml.sax.saxutils import escape
 
 from analytics.domain.geo import corridor_polygon
 from analytics.domain.grid import CellActivity
+from analytics.domain.outputs import site_fields
 from analytics.domain.reference import Msr, Site
 
 
@@ -137,10 +138,7 @@ def _site_feature(site: Site) -> dict[str, object]:
         "geometry": geometry,
         "properties": {
             "layer": "site",
-            "name": site.name,
-            "types": sorted(site.site_types),
-            "status": site.status,
-            "confidence": site.confidence,
+            **site_fields(site),
             "origin": site.origin,
         },
     }
@@ -177,8 +175,12 @@ def _cell_description(cell: CellActivity) -> str:
 
 
 def _site_description(site: Site) -> str:
+    fields = site_fields(site)
     types = ",".join(sorted(site.site_types)) or "untyped"
-    return f"{site.status} {site.confidence:.2f} {types} {site.origin}"
+    return (
+        f"{fields['assessment']} {fields['status']} "
+        f"{site.confidence:.2f} {types} {site.origin}"
+    )
 
 
 def _kml_point(name: str, description: str, latitude: float, longitude: float) -> str:

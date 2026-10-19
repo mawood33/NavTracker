@@ -19,6 +19,7 @@ from analytics.domain.outputs import (
     build_snapshot,
     fusion_document,
     routing_metadata,
+    site_fields,
 )
 from analytics.domain.reference import (
     Msr,
@@ -27,6 +28,7 @@ from analytics.domain.reference import (
 from analytics.domain.reports import (
     Report,
 )
+from analytics.domain.tracks import GpsFix
 
 
 class QueryService:
@@ -139,6 +141,7 @@ class QueryService:
             cells=state._cells,
             routes=state._msrs,
             route_reports=state._msr_reports,
+            tracks=state._fixes,
             suggested_fused=tuple(
                 fusion_document(item.suggested_fusion)
                 for item in state._correlations
@@ -148,7 +151,10 @@ class QueryService:
 
     def api_sites(self) -> list[dict[str, object]]:
         state = self._state
-        return [_api_site(site) for site in state._sites]
+        return [site_fields(site) for site in state._sites]
+
+    def tracks(self) -> list[GpsFix]:
+        return list(self._state._fixes)
 
     def correlations_document(self) -> dict[str, object]:
         state = self._state
@@ -182,20 +188,6 @@ class QueryService:
         moment = as_of or datetime.now(UTC)
         return {"activities": [_activity_row(item, moment, state) for item in state._correlations]}
 
-
-def _api_site(site: Site) -> dict[str, object]:
-    assessment = "verified" if site.status == "confirmed" else site.status
-    return {
-        "id": site.name,
-        "name": site.name,
-        "latitude": site.latitude,
-        "longitude": site.longitude,
-        "status": site.activity_status,
-        "assessment": assessment,
-        "confidence": site.confidence,
-        "types": sorted(site.site_types),
-        "bmoa": site.moa,
-    }
 
 def _activity_row(
     correlation: Correlation,

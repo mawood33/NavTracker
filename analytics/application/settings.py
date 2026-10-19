@@ -114,3 +114,4 @@ class AnalyticsSettings:
     chat_failover_backoff_initial_seconds: float = 1.0
     chat_failover_backoff_cap_seconds: float = 30.0
     chat_failover_probe_interval_seconds: float = 60.0
+    max_fixes_per_vehicle: int = 100

@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from analytics.application.dispatch import (
     ingest_room_list,
 )
+from analytics.application.hub import OutputHub
 from analytics.application.room_memory import RoomMemory, note_message
 from analytics.application.state import AnalyticsState
 from analytics.domain.chat_text import (
@@ -22,7 +23,7 @@ from analytics.domain.correlation import (
     dedupe_messages,
     message_from_event,
 )
-from analytics.domain.outputs import SCHEMA_NAME, SCHEMA_VERSION
+from analytics.domain.outputs import SCHEMA_NAME, SCHEMA_VERSION, track_document
 from analytics.domain.reference import (
     match_bmoa,
     match_msr,
@@ -57,7 +58,11 @@ class IngestService:
                 continue
             kept.append(replace(fix, timestamp=ensure_utc(fix.timestamp)))
         state._fixes.extend(kept)
-        state._fixes = _retain_fixes(state._fixes, state.settings.fix_retention_seconds)
+        state._fixes = _limit_fixes(
+            state._fixes,
+            state.settings.fix_retention_seconds,
+            state.settings.max_fixes_per_vehicle,
+        )
 
     def add_reports(self, reports: list[Report]) -> None:
         state = self._state
@@ -224,7 +229,9 @@ class IngestService:
             for report in state._reports
             if report.message_id != message_id and report.chat_message_id != message_id
         )
+        removed = [fix for fix in state._fixes if fix.origin_id == message_id]
         state._fixes = [fix for fix in state._fixes if fix.origin_id != message_id]
+        _drop_retracted_tracks(state.hub, message_id)
         state._taskings = tuple(
             task for task in state._taskings if task.chat_message_id != message_id
         )
@@ -235,6 +242,7 @@ class IngestService:
                 "schema_version": SCHEMA_VERSION,
                 "type": "retract",
                 "message_id": message_id,
+                "tracks": [track_document(fix) for fix in removed],
             }
         )
         logger.info("scrubbed %s", message_id)
@@ -449,6 +457,17 @@ class IngestService:
         return list(messages), taskings
 
 
+def _limit_fixes(fixes: list[GpsFix], seconds: float, per_vehicle: int) -> list[GpsFix]:
+    """Apply retention, then keep the newest ``per_vehicle`` fixes.
+
+    ``seconds`` of 0 keeps every timestamp. ``per_vehicle`` of 0 keeps
+    every fix that survived retention.
+    """
+
+    retained = _retain_fixes(fixes, seconds)
+    return _cap_fixes(retained, per_vehicle)
+
+
 def _retain_fixes(fixes: list[GpsFix], seconds: float) -> list[GpsFix]:
     """Drop fixes older than ``seconds`` before each vehicle's newest fix."""
 
@@ -465,6 +484,41 @@ def _retain_fixes(fixes: list[GpsFix], seconds: float) -> list[GpsFix]:
         if fix.timestamp >= cutoff:
             kept.append(fix)
     return kept
+
+
+def _cap_fixes(fixes: list[GpsFix], per_vehicle: int) -> list[GpsFix]:
+    if per_vehicle <= 0 or not fixes:
+        return fixes
+    grouped: dict[str, list[GpsFix]] = {}
+    for fix in fixes:
+        grouped.setdefault(fix.vehicle_id, []).append(fix)
+    allowed: set[int] = set()
+    for group in grouped.values():
+        ordered = sorted(group, key=lambda item: item.timestamp)
+        for fix in ordered[-per_vehicle:]:
+            allowed.add(id(fix))
+    return [fix for fix in fixes if id(fix) in allowed]
+
+
+def _drop_retracted_tracks(hub: OutputHub, message_id: str) -> None:
+    """A reconnect must not receive a fix that a retract already removed."""
+
+    snapshot = hub.latest_snapshot()
+    if snapshot is None or not message_id:
+        return
+    tracks = snapshot.get("tracks")
+    if not isinstance(tracks, list):
+        return
+    kept = [
+        item
+        for item in tracks
+        if not (isinstance(item, dict) and item.get("origin_id") == message_id)
+    ]
+    if len(kept) == len(tracks):
+        return
+    patched = dict(snapshot)
+    patched["tracks"] = kept
+    hub.set_snapshot(patched)
 
 def _float_present(payload: Mapping[str, object]) -> bool:
     for key in ("latitude", "lat", "longitude", "lon", "lng"):
