@@ -8,6 +8,7 @@ readme = "README.md"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = [".", "packages/navtracker_common"]
 
 [tool.ruff]
 target-version = "py312"
@@ -17,10 +18,13 @@ src = ["app", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["analytics", "navtracker_common"]
+
 [tool.mypy]
 python_version = "3.12"
-files = ["app"]
-mypy_path = "."
+files = ["app", "analytics", "packages/navtracker_common/navtracker_common"]
+mypy_path = ".:packages/navtracker_common"
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_return_any = true
@@ -32,7 +36,12 @@ strict_optional = true
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["app.domain.*", "app.application.*"]
+module = [
+    "app.domain.*",
+    "app.application.*",
+    "analytics.domain.*",
+    "navtracker_common.*",
+]
 disallow_any_generics = true
 no_implicit_reexport = true
 strict_equality = true

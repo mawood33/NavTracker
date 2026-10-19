@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+<Document>
+  <name>Untitled project</name>
+  <gx:CascadingStyle kml:id="style-a">
+    <Style><IconStyle><scale>1.2</scale></IconStyle></Style>
+  </gx:CascadingStyle>
+  <Folder>
+    <name>Master Eastern Complex</name>
+    <Folder>
+      <name>MOA 6</name>
+      <Placemark>
+        <name>06001</name>
+        <styleUrl>#style-a</styleUrl>
+        <Point><coordinates>20.0,10.0,5</coordinates></Point>
+      </Placemark>
+    </Folder>
+  </Folder>
+</Document>
+</kml>

@@ -1,0 +1,223 @@
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+
+from analytics.domain.geo import (
+    distance_to_polyline_meters,
+    haversine_meters,
+    point_in_polygon,
+)
+
+_TYPE_SPLIT = re.compile(r"[,/;+]|\band\b")
+_TYPE_LABELS = {
+    "hide": "hide",
+    "hide site": "hide",
+    "launch": "launch",
+    "launch site": "launch",
+    "transload": "transload",
+    "transload site": "transload",
+    "trans load": "transload",
+}
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """One reason a site's confidence or a site type changed.
+
+    ``weight`` is added into confidence. ``site_type`` is empty for
+    untyped evidence and is ``hide``, ``launch``, or ``transload`` when
+    the observation supports that type. Durable kinds (``import``,
+    ``declared_type``, ``discovered``) survive a reassessment. Activity
+    kinds are replaced each time confidence is recomputed.
+    """
+
+    kind: str
+    weight: float
+    detail: str
+    site_type: str = ""
+    observed_at: datetime | None = None
+    source: str = ""
+    layer: str = ""
+    message_id: str = ""
+    tacrep_type: str = ""
+    block: str = ""
+    warning: str = ""
+    linked_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Site:
+    """A place that may be a hide, a launch, a transload, or several.
+
+    Player Data files are points. ``site_types`` is empty when the file
+    does not classify the place. A 5-digit numeric name is the MOA
+    (first two digits) plus a unique id (last three).
+
+    ``status`` is ``possible``, ``probable``, or ``confirmed``.
+    ``confidence`` is the sum of the current evidence, clamped by the
+    confidence policy. ``origin`` is ``import`` or ``discovered``.
+    """
+
+    name: str
+    site_types: frozenset[str] = frozenset()
+    status: str = "possible"
+    confidence: float = 0.0
+    evidence: tuple[Evidence, ...] = ()
+    origin: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
+    polygon: tuple[tuple[float, float], ...] = ()
+    moa: str = ""
+    complex_name: str = ""
+    mgrs: str = ""
+    activity_status: str = "unknown"
+    verified: bool = False
+
+
+@dataclass(frozen=True)
+class Msr:
+    """A main supply route polyline. Points are (latitude, longitude)."""
+
+    name: str
+    points: tuple[tuple[float, float], ...]
+    length_text: str = ""
+
+
+@dataclass(frozen=True)
+class Bmoa:
+    """A named area. Polygon points are (latitude, longitude)."""
+
+    name: str
+    polygon: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class ArchiveLimits:
+    """Caps for KMZ and XLSX decompression. Both declared and streamed sizes count."""
+
+    max_entries: int = 64
+    max_bytes: int = 33_554_432
+
+
+@dataclass(frozen=True)
+class ReferenceData:
+    sites: tuple[Site, ...] = ()
+    msrs: tuple[Msr, ...] = ()
+    bmoas: tuple[Bmoa, ...] = ()
+
+    def merge(self, other: "ReferenceData") -> "ReferenceData":
+        return ReferenceData(
+            sites=self.sites + other.sites,
+            msrs=self.msrs + other.msrs,
+            bmoas=self.bmoas + other.bmoas,
+        )
+
+
+def match_site(
+    latitude: float,
+    longitude: float,
+    sites: Sequence[Site],
+    max_meters: float,
+) -> Site | None:
+    """Return the closest site containing the point or within max_meters."""
+
+    best: Site | None = None
+    best_distance = max_meters
+    for site in sites:
+        if site.polygon and point_in_polygon(latitude, longitude, site.polygon):
+            return site
+        if site.latitude is None or site.longitude is None:
+            continue
+        distance = haversine_meters(
+            latitude, longitude, site.latitude, site.longitude
+        )
+        if distance <= best_distance:
+            best = site
+            best_distance = distance
+    return best
+
+
+def match_bmoa(
+    latitude: float,
+    longitude: float,
+    areas: Sequence[Bmoa],
+) -> Bmoa | None:
+    """Return the first BMOA polygon that contains the point."""
+
+    for area in areas:
+        if len(area.polygon) >= 3 and point_in_polygon(latitude, longitude, area.polygon):
+            return area
+    return None
+
+
+def match_msr(
+    latitude: float,
+    longitude: float,
+    msrs: Sequence[Msr],
+    corridor_meters: float,
+) -> Msr | None:
+    """Return the route whose corridor contains the point, if any."""
+
+    best: Msr | None = None
+    best_distance = corridor_meters
+    for route in msrs:
+        distance = distance_to_polyline_meters(latitude, longitude, route.points)
+        if distance <= best_distance:
+            best = route
+            best_distance = distance
+    return best
+
+
+def named_bmoa(text: str, areas: Sequence[Bmoa]) -> str:
+    """Use the imported area name when the reported TAI or BMOA matches."""
+
+    return _canonical_name(text, [area.name for area in areas], ("TAI", "BMOA"))
+
+
+def named_msr(text: str, routes: Sequence[Msr]) -> str:
+    """Use the imported MSR name when the reported route matches."""
+
+    return _canonical_name(text, [route.name for route in routes], ("MSR",))
+
+
+def _canonical_name(text: str, names: list[str], prefixes: tuple[str, ...]) -> str:
+    raw = text.strip()
+    if not raw:
+        return ""
+    target = _name_key(raw)
+    stripped = _name_key(_drop_prefix(raw, prefixes))
+    for name in names:
+        candidate = _name_key(name)
+        without = _name_key(_drop_prefix(name, prefixes))
+        if target in {candidate, without} or stripped in {candidate, without}:
+            return name
+    return raw
+
+
+def _drop_prefix(text: str, prefixes: tuple[str, ...]) -> str:
+    pattern = "|".join(prefixes)
+    return re.sub(rf"^(?:{pattern})\s*", "", text.strip(), flags=re.IGNORECASE)
+
+
+def _name_key(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def parse_site_types(raw: str) -> frozenset[str]:
+    """Map a file label onto a set of hide, launch, and transload.
+
+    Separators are comma, slash, semicolon, plus, and the word ``and``.
+    ``hide/launch`` and ``transload and hide`` are combinations. An
+    unrecognized token is ignored. Player Data with no type column
+    yields an empty set.
+    """
+
+    text = raw.strip().lower().replace("-", " ").replace("_", " ")
+    found: set[str] = set()
+    for part in _TYPE_SPLIT.split(text):
+        label = " ".join(part.split())
+        mapped = _TYPE_LABELS.get(label)
+        if mapped is not None:
+            found.add(mapped)
+    return frozenset(found)

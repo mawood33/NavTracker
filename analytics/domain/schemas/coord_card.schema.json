@@ -1,0 +1,68 @@
+{
+  "default_version": "1",
+  "versions": {
+    "1": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://navtracker.example/schemas/coord-card/1",
+      "title": "NavTracker exercise coord card",
+      "description": "Version 1. Unknown fields and template properties are allowed so a new exercise format does not need a schema change. Built-in CAT CE radii remain the defaults until cat_ce on the card replaces them.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "enum": ["1"]
+        },
+        "mismatch_meters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ellipse_unit": {
+          "type": "string"
+        },
+        "magnetic_declination_degrees": {
+          "type": "number"
+        },
+        "cat_ce": {},
+        "confidence_terms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "bullseye": {},
+        "rooms": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "name": { "type": "string" },
+              "kind": {},
+              "kinds": {},
+              "start": {},
+              "end": {},
+              "fields": {},
+              "rooms": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

@@ -20,6 +20,18 @@ from app.application.mode import (
     resolve_navixy_mode,
 )
 from app.infrastructure.crypto import fernet_key_for_mode, require_public_material
+from navtracker_common.settings import (
+    env_setting as _env,
+)
+from navtracker_common.settings import (
+    float_setting as _float_setting,
+)
+from navtracker_common.settings import (
+    int_setting as _int_setting,
+)
+from navtracker_common.settings import (
+    pick_setting as _pick,
+)
 
 
 @dataclass(frozen=True)
@@ -52,31 +64,6 @@ class Settings:
     encryption_key: str
     mode: str
     fernet_key: bytes | None
-
-def _env(name: str, default: str | None = None) -> str:
-    value = os.getenv(name, default)
-    if value is None:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
-
-
-def _int_setting(name: str, value: str) -> int:
-    try:
-        return int(value.strip())
-    except (TypeError, ValueError):
-        raise RuntimeError(
-            f"Invalid {name}={value!r}. Expected an integer."
-        ) from None
-
-
-def _float_setting(name: str, value: str) -> float:
-    try:
-        return float(value.strip())
-    except (TypeError, ValueError):
-        raise RuntimeError(
-            f"Invalid {name}={value!r}. Expected a number."
-        ) from None
-
 
 def load_settings(config_dir: str | Path = "config") -> Settings:
     environment = os.getenv("APP_ENV", "development")
@@ -277,11 +264,3 @@ def _fernet_key(crypto: dict, mode: str) -> bytes | None:
             configured = str(raw)
     return fernet_key_for_mode(mode, configured)
 
-
-def _pick(env_name: str, yaml_value: object, default: object) -> object:
-    env_value = os.getenv(env_name)
-    if env_value is not None and env_value.strip() != "":
-        return env_value.strip()
-    if yaml_value is not None:
-        return yaml_value
-    return default

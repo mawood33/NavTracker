@@ -1,0 +1,95 @@
+# Production does not read Navixy. Clairvoyant is on, websocket first.
+analytics:
+  http_host: "127.0.0.1"
+  http_port: 8080
+  reference_dir: "/data/reference"
+  publish_events: true
+  analysis_interval_seconds: 30
+  chat_poll_seconds: 15
+  chat_speed_unit: kmh
+  confidence:
+    initial_confidence: 0.2
+    probable_at: 0.55
+    confirmed_at: 0.8
+    window_seconds: 86400
+    decay_per_day: 0
+  grid:
+    resolution: 9
+    window_seconds: 86400
+    decay_half_life_seconds: 0
+    hotspot_score: 1.5
+  correlation:
+    window_minutes: 45
+    hide_gap_minutes: 20
+    minimum_score: 0.70
+    minimum_sources: 3
+    minimum_transload_speed_mps: 0.5
+  map:
+    provider: none
+    tile_url: ""
+    attribution: ""
+    min_zoom: 0
+    max_zoom: 19
+    center_latitude: 39.8283
+    center_longitude: -98.5795
+    zoom: 4
+  routing:
+    engine: msr
+    timeout_seconds: 15
+    cache_ttl_seconds: 300
+    cache_size: 256
+    snap_meters: 500
+    join_meters: 40
+  reports:
+    window_seconds: 86400
+    weight: 0.1
+    type_weight: 0.12
+    cap: 0.3
+
+chatsurfer:
+  base_url: "https://chatsurfer.nro.mil"
+  domain_id: "chatsurferxmppunclass"
+  room_name: "freedom_flag"
+  room_name_encrypted: "freedom_flag_encrypted"
+  read_rooms:
+    - freedom_flag
+  tacrep_rooms: []
+  nickname: "navtracker-analytics"
+  classification: "UNCLASSIFIED//FOUO"
+  user_high_classification: "UNCLASSIFIED//FOUO"
+  client_cert: "/data/certs/client/tls.crt"
+  client_key: "/data/certs/client/tls.key"
+  rate_limit: 60
+  max_message_size: 4000
+  encryption_required: false
+
+clairvoyant:
+  enabled: true
+  mode: websocket
+  ws_url: "wss://clairvoyant.example/stream"
+  base_url: "https://clairvoyant.example"
+  layer: "default"
+  api_key: ""
+  report_layers: []
+  failover_max_attempts: 5
+  failover_backoff_initial_seconds: 1
+  failover_backoff_cap_seconds: 30
+  failover_probe_interval_seconds: 60
+  failover_healthy_window_seconds: 30
+
+frontend:
+  enabled: false
+  ingest_url: ""
+
+reference:
+  columns:
+    name: "Name/ID"
+    latitude_dms: "DMS Lat"
+    longitude_dms: "DMS Long"
+    mgrs: "MGRS"
+
+crypto:
+  encryption_cert: "/data/certs/client/tls.crt"
+  encryption_key: "/data/certs/client/tls.key"
+  mode: pem
+  fernet_key: None

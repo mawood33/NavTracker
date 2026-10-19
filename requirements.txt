@@ -1,4 +1,7 @@
 cryptography==46.0.1
+h3==4.3.0
 httpx==0.28.1
+jsonschema==4.25.1
+mgrs==1.4.6
 PyYAML==6.0.2
 websockets==15.0.1

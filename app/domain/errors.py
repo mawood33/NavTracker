@@ -1,3 +1,6 @@
+from navtracker_common.errors import PublicationError
+
+
 class SourceConnectionError(Exception):
     """Navixy socket failed to connect, subscribe, or stay open.
 
@@ -15,9 +18,8 @@ class TrackerDiscoveryError(Exception):
     """
 
 
-class PublicationError(Exception):
-    """A tracker fix could not be published.
-
-    This is independent of the Navixy socket. Callers must keep reading
-    or polling and must not count it toward websocket failover.
-    """
+__all__ = [
+    "PublicationError",
+    "SourceConnectionError",
+    "TrackerDiscoveryError",
+]

@@ -13,3 +13,48 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      ANALYTICS_HTTP_HOST: 0.0.0.0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./reference:/data/reference
+      - ~/workspace/data/certs/client:/data/certs/client:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  analytics-frontend:
+    profiles: ["frontend"]
+    image: python:3.12-slim
+    command:
+      - python
+      - -m
+      - http.server
+      - "8081"
+      - --bind
+      - 0.0.0.0
+      - --directory
+      - /srv
+    volumes:
+      - ./analytics/frontend:/srv:ro
+    ports:
+      - "8081:8081"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
