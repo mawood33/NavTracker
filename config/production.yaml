@@ -22,7 +22,7 @@ chatsurfer:
 
 # mode: pem, update cert/key to tls.crt/tls.key
 # mode: ssh, update cert/key to id_rsa.pub/id_rsa
-# mode: fernet, remove tls.crt/tls.key from /data/certs/client dir since that is default
+# mode: fernet, set FERNET_KEY. The literal None is unset, not a key.
 crypto:
   encryption_cert: "/data/certs/client/tls.crt"
   encryption_key: "/data/certs/client/tls.key"

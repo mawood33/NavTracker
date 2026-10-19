@@ -2,6 +2,7 @@
 cp .env.example .env
 # Edit .env and config/development.yaml
 # NAVIXY_MODE=websocket (default) or poll. See README.md.
+# docker-compose.yml passes APP_ENV into the container (default development).
 docker compose up --build
 
 # Run staging

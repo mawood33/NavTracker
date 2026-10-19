@@ -4,6 +4,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      APP_ENV: ${APP_ENV:-development}
     volumes:
       - ~/workspace/data/certs/client:/data/certs/client:ro
     read_only: true

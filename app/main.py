@@ -4,7 +4,7 @@ import logging
 from app.application.supervisor import IngestionSupervisor
 from app.infrastructure.chatsurfer import ChatSurferApiClient
 from app.infrastructure.config import load_settings
-from app.infrastructure.crypto import CryptoHandler
+from app.infrastructure.crypto import build_crypto_handler
 from app.infrastructure.navixy_api import NavixyApiClient
 from app.infrastructure.navixy_ws import NavixyWebSocketClient
 
@@ -18,25 +18,12 @@ logging.basicConfig(
 async def main() -> None:
     settings = load_settings()
 
-    crypto_handler = None
-    if settings.chatsurfer_encryption_required:
-        if settings.mode == "ssh":
-            crypto_handler = CryptoHandler(
-                mode=settings.mode,
-                public_key_path=settings.encryption_cert,
-                private_key_path=None,
-            )
-        elif settings.mode == "fernet":
-            crypto_handler = CryptoHandler(
-                mode=settings.mode,
-                public_key_path=None,
-                private_key_path=None,
-            )
-        else:
-            crypto_handler = CryptoHandler(
-                public_key_path=settings.encryption_cert,
-                private_key_path=None,
-            )
+    crypto_handler = build_crypto_handler(
+        encryption_required=settings.chatsurfer_encryption_required,
+        mode=settings.mode,
+        public_key_path=settings.encryption_cert,
+        fernet_key=settings.fernet_key,
+    )
 
     chat_client = ChatSurferApiClient(
         base_url=settings.chatsurfer_base_url,

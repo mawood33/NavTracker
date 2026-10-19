@@ -15,6 +15,7 @@ from app.application.mode import (
     build_failover_policy,
     resolve_navixy_mode,
 )
+from app.infrastructure.crypto import FERNET_KEY_REQUIRED, parse_fernet_key
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class Settings:
     encryption_cert: str
     encryption_key: str
     mode: str
-    fernet_key: bytes
+    fernet_key: bytes | None
 
 def _env(name: str, default: str | None = None) -> str:
     value = os.getenv(name, default)
@@ -57,6 +58,11 @@ def _env(name: str, default: str | None = None) -> str:
 def load_settings() -> Settings:
     environment = os.getenv("APP_ENV", "development")
     config_path = Path(f"config/{environment}.yaml")
+    if not config_path.is_file():
+        raise RuntimeError(
+            f"APP_ENV='{environment}' has no config file at {config_path}. "
+            "Expected one of: development, staging, production."
+        )
     with config_path.open("r", encoding="utf-8") as file:
         config = yaml.safe_load(file) or {}
 
@@ -104,6 +110,8 @@ def load_settings() -> Settings:
             DEFAULT_HEALTHY_WINDOW_SECONDS,
         ),
     )
+    crypto_mode = _crypto_mode(crypto)
+    fernet_key = _fernet_key(crypto, crypto_mode)
 
     return Settings(
         environment=environment,
@@ -197,16 +205,37 @@ def load_settings() -> Settings:
             "ENCRYPTION_KEY",
             crypto.get("encryption_key", "/data/certs/client/tls.key"),
         ),
-        mode=_env(
-            "MODE",
-            crypto.get("mode", "pem"),
-        ),
-        fernet_key=_env(
-            "FERNET_KEY",
-            crypto.get("fernet_key", None),
-        ),
+        mode=crypto_mode,
+        fernet_key=fernet_key,
         failover=failover,
     )
+
+
+_CRYPTO_MODES = {"pem", "ssh", "fernet"}
+
+
+def _crypto_mode(crypto: dict) -> str:
+    mode = _env("MODE", str(crypto.get("mode", "pem"))).strip().lower()
+    if mode not in _CRYPTO_MODES:
+        raise RuntimeError(
+            f"Invalid MODE='{mode}'. Expected one of: pem, ssh, fernet."
+        )
+    return mode
+
+
+def _fernet_key(crypto: dict, mode: str) -> bytes | None:
+    if "FERNET_KEY" in os.environ:
+        configured: bytes | str | None = os.environ["FERNET_KEY"]
+    else:
+        raw = crypto.get("fernet_key")
+        if raw is None or isinstance(raw, (bytes, str)):
+            configured = raw
+        else:
+            configured = str(raw)
+    key = parse_fernet_key(configured)
+    if mode == "fernet" and key is None:
+        raise RuntimeError(FERNET_KEY_REQUIRED)
+    return key
 
 
 def _pick(env_name: str, yaml_value: object, default: object) -> object:

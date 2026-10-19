@@ -12,6 +12,68 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 logger = logging.getLogger(__name__)
 
+FERNET_KEY_REQUIRED = (
+    "Fernet mode requires FERNET_KEY. "
+    "Set it to a url-safe base64-encoded 32-byte key. "
+    "A blank value or the YAML literal None is unset, not a key."
+)
+FERNET_KEY_INVALID = (
+    "Invalid FERNET_KEY. Expected a url-safe base64-encoded 32-byte key."
+)
+
+_UNSET_FERNET_VALUES = {"", "none", "null"}
+
+
+def parse_fernet_key(value: bytes | str | None) -> bytes | None:
+    """Return a Fernet key, or None when the setting is unset.
+
+    PyYAML loads `fernet_key: None` as the string "None", not as null.
+    That placeholder is unset. A present value must already be a Fernet key.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        try:
+            text = value.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(FERNET_KEY_INVALID) from exc
+    else:
+        text = value
+    text = text.strip()
+    if text.lower() in _UNSET_FERNET_VALUES:
+        return None
+    key = text.encode("ascii")
+    try:
+        Fernet(key)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(FERNET_KEY_INVALID) from exc
+    return key
+
+
+def build_crypto_handler(
+    *,
+    encryption_required: bool,
+    mode: str,
+    public_key_path: str | None,
+    fernet_key: bytes | str | None,
+) -> "CryptoHandler | None":
+    if not encryption_required:
+        return None
+    if mode == "ssh":
+        return CryptoHandler(
+            mode="ssh",
+            public_key_path=public_key_path,
+            private_key_path=None,
+        )
+    if mode == "fernet":
+        return CryptoHandler(mode="fernet", fernet_key=fernet_key)
+    return CryptoHandler(
+        mode="pem",
+        public_key_path=public_key_path,
+        private_key_path=None,
+    )
+
+
 class CryptoHandler:
     def __init__(
         self,
@@ -36,13 +98,9 @@ class CryptoHandler:
             if public_key_path or private_key_path:
                 raise ValueError("Fernet mode does not use public/private key paths")
 
-            if fernet_key is None:
-                self.fernet_key = Fernet.generate_key()
-            elif isinstance(fernet_key, str):
-                self.fernet_key = fernet_key.encode("ascii")
-            else:
-                self.fernet_key = fernet_key
-
+            self.fernet_key = parse_fernet_key(fernet_key)
+            if self.fernet_key is None:
+                raise RuntimeError(FERNET_KEY_REQUIRED)
             self.fernet = Fernet(self.fernet_key)
             return
 
