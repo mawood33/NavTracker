@@ -1,11 +1,11 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.application.messages import to_outbound_message
 from app.domain.entities import TrackerPosition
 from app.domain.publication import SCHEMA_VERSION
 
-WHEN = datetime(2026, 1, 1, tzinfo=timezone.utc)
+WHEN = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def test_outbound_message_is_versioned_and_not_the_domain_object():

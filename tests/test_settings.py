@@ -2,12 +2,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from cryptography.fernet import Fernet
-
 from app.application.mode import IngestionMode
 from app.infrastructure.config import load_settings
 from app.infrastructure.crypto import FERNET_KEY_INVALID, FERNET_KEY_REQUIRED, build_crypto_handler
-
+from cryptography.fernet import Fernet
 
 _SETTINGS_ENV = (
     "APP_ENV",

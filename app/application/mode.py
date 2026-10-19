@@ -34,8 +34,10 @@ class FailoverPolicy:
 
     def backoff_seconds(self, consecutive_failures: int) -> float:
         power = max(consecutive_failures, 1) - 1
-        delay = self.backoff_initial_seconds * (2**power)
-        return min(self.backoff_cap_seconds, delay)
+        delay = self.backoff_initial_seconds * (1 << power)
+        if delay < self.backoff_cap_seconds:
+            return delay
+        return self.backoff_cap_seconds
 
 
 def parse_navixy_mode(value: str, *, source: str = "NAVIXY_MODE") -> IngestionMode:
@@ -132,12 +134,20 @@ def _positive_float(name: str, value: object) -> float:
         raise RuntimeError(
             f"Invalid {name}={value!r}. Expected a number greater than 0."
         )
-    try:
+    number: float
+    if isinstance(value, (int, float)):
         number = float(value)
-    except (TypeError, ValueError):
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            raise RuntimeError(
+                f"Invalid {name}={value!r}. Expected a number greater than 0."
+            ) from None
+    else:
         raise RuntimeError(
             f"Invalid {name}={value!r}. Expected a number greater than 0."
-        ) from None
+        )
     if number <= 0:
         raise RuntimeError(
             f"Invalid {name}={value!r}. Expected a number greater than 0."

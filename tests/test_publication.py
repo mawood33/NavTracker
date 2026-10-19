@@ -1,16 +1,15 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
-
 from app.application.publication import LatestFixRetry, publish_backoff
 from app.domain.entities import TrackerPosition
 from app.domain.errors import PublicationError
 from app.infrastructure.chatsurfer import ChatSurferApiClient
 
-T1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-T2 = datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)
+T1 = datetime(2026, 1, 1, tzinfo=UTC)
+T2 = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
 
 
 class Clock:

@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from app.application.messages import to_outbound_message
 from app.domain.entities import TrackerPosition
@@ -17,9 +18,17 @@ PUBLISH_BACKOFF_INITIAL_SECONDS = 0.5
 PUBLISH_BACKOFF_CAP_SECONDS = 2.0
 
 
+class _Clock(Protocol):
+    async def sleep(self, seconds: float) -> None:
+        """Pause the retry loop."""
+
+
 def publish_backoff(failed_attempts: int, initial: float, cap: float) -> float:
     power = max(failed_attempts, 1) - 1
-    return min(cap, initial * (2**power))
+    delay = initial * (1 << power)
+    if delay < cap:
+        return delay
+    return cap
 
 
 def _is_older_than_pending(position: TrackerPosition, current: object) -> bool:
@@ -60,7 +69,7 @@ class LatestFixRetry:
     def __init__(
         self,
         publisher: MessagePublisher,
-        clock: object,
+        clock: _Clock,
         on_success: Callable[[TrackerPosition], Awaitable[None]],
         on_abandon: Callable[[TrackerPosition], Awaitable[None]],
         max_attempts: int = PUBLISH_MAX_ATTEMPTS,

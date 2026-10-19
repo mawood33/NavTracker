@@ -3,7 +3,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.application.mode import FailoverPolicy, IngestionMode
 from app.application.publication import (
@@ -26,7 +26,7 @@ class SystemClock:
         return time.monotonic()
 
     def now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)

@@ -3,7 +3,6 @@ import json
 import logging
 
 import pytest
-
 from app.domain.errors import SourceConnectionError
 from app.infrastructure.navixy_ws import (
     NavixySubscription,

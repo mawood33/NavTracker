@@ -1,5 +1,5 @@
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.domain.entities import TrackerPosition
 from app.domain.publication import OutboundMessage
@@ -40,7 +40,7 @@ class PositionStream(Protocol):
 
 
 class MessagePublisher(Protocol):
-    async def publish(self, message: OutboundMessage) -> dict:
+    async def publish(self, message: OutboundMessage) -> dict[str, Any]:
         """Publish one versioned position document."""
 
 

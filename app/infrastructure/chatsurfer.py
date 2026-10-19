@@ -7,6 +7,7 @@ import httpx
 
 from app.domain.errors import PublicationError
 from app.domain.publication import OutboundMessage
+
 from .crypto import CryptoHandler
 from .limiter import RateLimiter
 
@@ -97,7 +98,12 @@ class ChatSurferApiClient:
             room_name = self.room_name_encrypted
 
         message = self._fit_message_limit(message)
-        logger.debug(f'Publish to ChatSurfer: room-{self.room_name}, nickname-{self.nickname}, encryption-{self.encryption_required}')
+        logger.debug(
+            "Publish to ChatSurfer: room-%s, nickname-%s, encryption-%s",
+            self.room_name,
+            self.nickname,
+            self.encryption_required,
+        )
 
         await self.rate_limiter.acquire()
 
