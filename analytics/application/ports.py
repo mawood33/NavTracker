@@ -4,12 +4,13 @@ Adapters live under ``analytics.infrastructure`` and are wired in
 ``analytics.composition``. This module does not import them.
 """
 
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
 from analytics.domain.columns import ColumnMap
 from analytics.domain.reference import ArchiveLimits, Msr, ReferenceData
+from analytics.domain.reports import Report
 from analytics.domain.routing import RouteLeg, VehicleProfile
 from analytics.domain.tracks import GpsFix
 
@@ -94,3 +95,30 @@ class ReferenceFiles(Protocol):
 class ReportPoller(Protocol):
     def poll(self) -> Awaitable[list[object]]:
         """Return newly observed reports."""
+
+
+class ReportSource(Protocol):
+    async def poll(self) -> list[Report]:
+        """Return newly observed reports. Does not have to be called at import."""
+
+
+class DocumentSink(Protocol):
+    async def publish(self, document: Mapping[str, object]) -> None:
+        """Deliver one snapshot or diff. Called only after analysis."""
+
+
+class ChatConnectionError(Exception):
+    """The ChatSurfer socket could not be read."""
+
+
+class ChatSubscription(Protocol):
+    async def receive(self) -> tuple[str, object] | None:
+        """``("message", ChatRoomMessage)``, ``("scrub", id)``, or a heart-beat."""
+
+    async def close(self) -> None:
+        """Release the socket."""
+
+
+class ChatEventStream(Protocol):
+    async def connect(self) -> ChatSubscription:
+        """Open STOMP and subscribe to the configured rooms."""

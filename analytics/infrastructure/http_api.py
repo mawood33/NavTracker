@@ -118,8 +118,16 @@ class ReferenceView(Protocol):
     def save_upload(self, filename: str, body: bytes) -> Mapping[str, int]:
         """Store one reference file and reload."""
 
-    def save_coord_card(self, filename: str, body: bytes) -> Mapping[str, int]:
+    def save_coord_card(
+        self,
+        filename: str,
+        body: bytes,
+        content_type: str = "",
+    ) -> Mapping[str, int]:
         """Replace the exercise coord card after it validates."""
+
+    def save_coord_card_schema(self, body: bytes, version: str = "") -> Mapping[str, object]:
+        """Replace or extend the coord card schema after it validates."""
 
 
 class ExportView(Protocol):
@@ -220,6 +228,8 @@ def route_request(
         return _ingest_events(body, headers, snapshot, batch=False, tacrep=True)
     if method == "POST" and target == "/v1/events/batch":
         return _ingest_events(body, headers, snapshot, batch=True, tacrep=False)
+    if method == "POST" and target == "/v1/coord-card/schema":
+        return _coord_card_schema(body, headers, snapshot)
     if method == "POST" and target == "/v1/coord-card":
         return _coord_card(body, headers, snapshot)
     if method == "GET" and target == "/v1/events/correlations":
@@ -349,10 +359,23 @@ def _coord_card(
     snapshot: ReferenceView,
 ) -> tuple[int, dict[str, object] | str, str]:
     filename = headers.get("x-filename", "coord-card.yaml").strip() or "coord-card.yaml"
+    content_type = headers.get("content-type", "")
     try:
-        return _json(200, dict(snapshot.save_coord_card(filename, body)))
+        return _json(200, dict(snapshot.save_coord_card(filename, body, content_type)))
     except ValueError as exc:
         return _error(400, str(exc), "invalid_coord_card")
+
+
+def _coord_card_schema(
+    body: bytes,
+    headers: Mapping[str, str],
+    snapshot: ReferenceView,
+) -> tuple[int, dict[str, object] | str, str]:
+    version = headers.get("x-schema-version", "").strip()
+    try:
+        return _json(200, dict(snapshot.save_coord_card_schema(body, version)))
+    except ValueError as exc:
+        return _error(400, str(exc), "invalid_schema")
 
 
 def _source_id(headers: Mapping[str, str], payload: Mapping[str, object] | None) -> str:

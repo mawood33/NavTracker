@@ -111,6 +111,7 @@ class Report:
     tacrep_type: str = ""
     block_label: str = ""
     warning: str = ""
+    chat_message_id: str = ""
 
 
 def report_key(report: Report) -> tuple[str, str, str]:

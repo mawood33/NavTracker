@@ -1,11 +1,21 @@
 import asyncio
 from dataclasses import dataclass
 
+from analytics.application.analysis import AnalysisService
+from analytics.application.catalog import CatalogService
+from analytics.application.dispatch import ingest_room_list
 from analytics.application.failover import run_clairvoyant
 from analytics.application.hub import OutputHub
+from analytics.application.ingest import IngestService
+from analytics.application.loop import AnalysisLoop
 from analytics.application.ports import RoomPublisher
+from analytics.application.publishing import PublishService
+from analytics.application.query import QueryService
+from analytics.application.routing import RoutingService
 from analytics.application.service import AnalyticsService, DocumentSink, ReportSource
+from analytics.application.state import make_state
 from analytics.domain.routing import RouteCache
+from analytics.infrastructure.chat_ws import ChatStompStream
 from analytics.infrastructure.clairvoyant import (
     ClairvoyantApiClient,
     ClairvoyantReportClient,
@@ -57,7 +67,7 @@ def wire_service(
 
     if publisher is None and chat is not None:
         publisher = ChatRoomPublisher(chat)
-    return AnalyticsService(
+    state = make_state(
         settings,
         chat,
         report_source,
@@ -77,6 +87,41 @@ def wire_service(
         hub=OutputHub(),
         publisher=publisher,
     )
+    query = QueryService(state)
+    ingest = IngestService(state)
+    routing = RoutingService(state)
+    catalog = CatalogService(state)
+    publish = PublishService(state, query)
+    analysis = AnalysisService(state)
+    loop = AnalysisLoop(state, ingest, analysis, publish)
+    catalog.open()
+    service = AnalyticsService(
+        state,
+        query=query,
+        ingest=ingest,
+        routing=routing,
+        catalog=catalog,
+        publish=publish,
+        analysis=analysis,
+        loop=loop,
+    )
+    if (
+        chat is not None
+        and settings.chat_read_enabled
+        and settings.chat_ingest_mode == "websocket"
+    ):
+        rooms = tuple(
+            dict.fromkeys((*settings.read_rooms, *ingest_room_list(state._coord_card, settings)))
+        )
+        if rooms:
+            service._loop._stream = ChatStompStream(
+                chat,
+                rooms,
+                api_key=settings.chatsurfer_api_key,
+                client_cert=settings.chatsurfer_client_cert,
+                client_key=settings.chatsurfer_client_key,
+            )
+    return service
 
 
 def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
@@ -110,6 +155,7 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
             crypto_handler=crypto_handler,
             client_cert=settings.chatsurfer_client_cert or None,
             client_key=settings.chatsurfer_client_key or None,
+            read_spec=settings.chat_read,
         )
     reader: ClairvoyantApiClient | None = None
     stream: ClairvoyantWebSocket | None = None

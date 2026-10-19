@@ -160,6 +160,7 @@ class TacrepMessage:
     vacant: bool = False
     vacant_weight: float = 0.25
     history: tuple["TacrepMessage", ...] = ()
+    chat_message_id: str = ""
 
 
 @dataclass(frozen=True)

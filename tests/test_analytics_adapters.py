@@ -25,6 +25,7 @@ class _Response:
         self.status_code = status
         self._payload = payload
         self.text = json.dumps(payload)
+        self.content = self.text.encode()
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -282,8 +283,8 @@ def test_chat_reader_decrypts_a_fernet_room_message():
                         {
                             "id": "m1",
                             "roomName": "freedom_flag",
-                            "message": handler.encrypt(plain),
-                            "nickname": "navtracker",
+                            "text": handler.encrypt(plain),
+                            "sender": "navtracker",
                             "timestamp": "2026-01-01T00:00:01+00:00",
                         }
                     ]
@@ -311,11 +312,12 @@ def test_chat_reader_decrypts_a_fernet_room_message():
         )
         await client.client.aclose()
         client.client = http
-        messages = await client.read_room("freedom_flag", since="0")
+        messages = await client.read_room("freedom_flag")
         assert messages[0].body == plain
         assert messages[0].message_id == "m1"
-        assert http.calls[0][0].endswith("/api/chatserver/messages")
-        assert http.calls[0][1]["roomName"] == "freedom_flag"
+        assert messages[0].nickname == "navtracker"
+        assert http.calls[0][0].endswith("/api/chat/messages/domain/freedom_flag")
+        assert http.calls[0][1] is None
         await client.close()
 
     asyncio.run(scenario())

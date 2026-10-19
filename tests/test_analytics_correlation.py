@@ -362,6 +362,9 @@ def test_checked_in_defaults_match_transload_oracle():
     assert settings.correlation.minimum_sources == 3
     assert settings.http_host == "127.0.0.1"
     assert settings.coord_card_path == ""
+    assert settings.chat_read_enabled is False
+    assert "{roomName}" in settings.chat_read.path
+    assert settings.chat_ingest_mode == "websocket"
     staging = validate_analytics_environment("staging")
     production = validate_analytics_environment("production")
     assert staging.map_provider == "none"

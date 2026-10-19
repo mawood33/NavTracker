@@ -13,7 +13,7 @@ from analytics.infrastructure.websocket import (
     read_client_frame,
 )
 
-_UPLOAD_PATHS = {"/reference/upload", "/v1/coord-card"}
+_UPLOAD_PATHS = {"/reference/upload", "/v1/coord-card", "/v1/coord-card/schema"}
 
 
 async def serve(settings: AnalyticsSettings, service: AnalyticsService) -> None:

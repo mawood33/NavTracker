@@ -55,6 +55,12 @@ chatsurfer:
   domain_id: "chatsurferxmppunclass"
   room_name: "freedom_flag"
   room_name_encrypted: "freedom_flag_encrypted"
+  # Room reads stay off until CHAT_SURFER_READ_ENABLED=true. The documented
+  # route is GET /api/chat/messages/{domainId}/{roomName}. A 404 means the
+  # room is empty or missing, not a process failure.
+  read_enabled: false
+  ingest_mode: websocket
+  backfill_minutes: 60
   read_rooms:
     - freedom_flag
   tacrep_rooms: []

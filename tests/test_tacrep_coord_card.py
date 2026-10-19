@@ -206,10 +206,17 @@ def test_example_cards_parse_and_are_not_the_development_default():
         Path("config/analytics/coord_card.example.csv").read_text(encoding="utf-8"),
         suffix=".csv",
     )
+    json_card = parse_coord_card_text(
+        Path("config/analytics/coord_card.example.json").read_text(encoding="utf-8"),
+        suffix=".json",
+    )
     assert [item.name for item in yaml_card.types] == ["MTI", "IMINT", "ELINT", "FUSED"]
     assert yaml_card.types[2].kinds == ("E", "G")
     assert [item.kind for item in csv_card.types] == ["J", "I", "E", "F"]
     assert csv_card.types[2].kinds == ("E", "G")
+    assert [item.name for item in json_card.types] == ["MTI", "IMINT", "ELINT", "FUSED"]
+    assert json_card.schema_version == "1"
+    assert json_card.types[2].kinds == ("E", "G")
     assert _settings().coord_card_path == ""
     point = MgrsLibrary().to_latlon("11SMS0000000000")
     assert point is not None

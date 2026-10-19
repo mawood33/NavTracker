@@ -16,6 +16,7 @@ class GpsFix:
     speed_mps: float | None = None
     heading: float | None = None
     source: str = ""
+    origin_id: str = ""
 
     def with_speed(self, speed_mps: float | None) -> "GpsFix":
         return GpsFix(
@@ -26,6 +27,7 @@ class GpsFix:
             speed_mps=speed_mps,
             heading=self.heading,
             source=self.source,
+            origin_id=self.origin_id,
         )
 
 

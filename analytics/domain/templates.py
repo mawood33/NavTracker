@@ -111,6 +111,7 @@ class Tasking:
     raw: str
     location_id: str = ""
     attributes: tuple[tuple[str, str], ...] = ()
+    chat_message_id: str = ""
 
 
 @dataclass(frozen=True)

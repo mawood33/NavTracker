@@ -16,11 +16,16 @@ error radius. The bullseye name and point are a hook only.
 An optional ``rooms`` section names ChatSurfer ingest rooms and the
 publish routing table. When that section is present it replaces the
 env and config values. When it is absent, env and config are used.
+
+Cards are YAML, JSON, or CSV. ``schema_version`` selects a Draft
+2020-12 schema from the loaded catalog. A missing version uses that
+catalog's default. Unknown fields stay on the mapping.
 """
 
 import csv
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Protocol
 
 import yaml
@@ -101,6 +106,7 @@ class CoordCard:
     bullseye_latitude: float | None = None
     bullseye_longitude: float | None = None
     templates: tuple[object, ...] = ()
+    schema_version: str = ""
 
     def match(self, kind: str, serial: int) -> tuple[CoordType | None, str, str]:
         """Return the type, block label, and warning. The id is kept."""
@@ -145,35 +151,124 @@ def parse_coord_card_text(
     magnetic_declination_degrees: float = 0.0,
     cat_ce: tuple[tuple[int, float], ...] = DEFAULT_CAT_CE_METERS,
     confidence_terms: tuple[ConfidenceTerm, ...] = DEFAULT_CONFIDENCE_TERMS,
+    content_type: str = "",
+    schema: object | None = None,
 ) -> CoordCard:
-    """Parse YAML or CSV. Raises ``CoordCardError`` and does not apply."""
+    """Parse YAML, JSON, or CSV. Raises ``CoordCardError`` and does not apply."""
 
-    body = text.strip()
-    if not body:
-        raise CoordCardError("Coord card is empty.")
-    if suffix.lower().endswith(".csv") or _looks_like_csv(body):
-        return _from_csv(
-            body,
-            mismatch_meters,
-            ellipse_unit=ellipse_unit,
-            magnetic_declination_degrees=magnetic_declination_degrees,
-            cat_ce=cat_ce,
-            confidence_terms=confidence_terms,
-        )
+    card, _document, _version = read_coord_card(
+        text,
+        suffix=suffix,
+        mismatch_meters=mismatch_meters,
+        ellipse_unit=ellipse_unit,
+        magnetic_declination_degrees=magnetic_declination_degrees,
+        cat_ce=cat_ce,
+        confidence_terms=confidence_terms,
+        content_type=content_type,
+        schema=schema,
+    )
+    return card
+
+
+def read_coord_card(
+    text: str,
+    *,
+    suffix: str = "",
+    mismatch_meters: float = 250.0,
+    ellipse_unit: str = "nmi",
+    magnetic_declination_degrees: float = 0.0,
+    cat_ce: tuple[tuple[int, float], ...] = DEFAULT_CAT_CE_METERS,
+    confidence_terms: tuple[ConfidenceTerm, ...] = DEFAULT_CONFIDENCE_TERMS,
+    content_type: str = "",
+    schema: object | None = None,
+) -> tuple[CoordCard, dict[str, object], str]:
+    """Return the card, the mapping that was checked, and the schema version."""
+
+    from analytics.domain.card_schema import (
+        SchemaCatalog,
+        SchemaCatalogError,
+        bundled_catalog,
+        normalize_card_document,
+        validate_card_document,
+    )
+
+    document = _document_from_text(text, suffix=suffix, content_type=content_type)
+    document = normalize_card_document(document)
+    catalog = schema if isinstance(schema, SchemaCatalog) else bundled_catalog()
     try:
-        loaded = yaml.safe_load(body)
-    except yaml.YAMLError as exc:
-        raise CoordCardError("Coord card is not valid YAML or CSV.") from exc
-    if not isinstance(loaded, dict):
-        raise CoordCardError("Coord card must be a mapping.")
-    return card_from_mapping(
-        loaded,
+        version = validate_card_document(document, catalog)
+    except SchemaCatalogError as exc:
+        raise CoordCardError(str(exc)) from exc
+    card = card_from_mapping(
+        document,
         mismatch_meters,
         ellipse_unit=ellipse_unit,
         magnetic_declination_degrees=magnetic_declination_degrees,
         cat_ce=cat_ce,
         confidence_terms=confidence_terms,
     )
+    if card.schema_version != version:
+        card = replace(card, schema_version=version)
+    return card, document, version
+
+
+def _document_from_text(text: str, *, suffix: str, content_type: str) -> dict[str, object]:
+    body = text.strip()
+    if not body:
+        raise CoordCardError("Coord card is empty.")
+    kind = detect_card_format(body, suffix=suffix, content_type=content_type)
+    if kind == "csv":
+        return _csv_document(body)
+    if kind == "json":
+        return _json_document(body)
+    return _yaml_document(body)
+
+
+def detect_card_format(text: str, *, suffix: str = "", content_type: str = "") -> str:
+    """Extension, then Content-Type, then a sniff of the body."""
+
+    ext = Path(suffix).suffix.lower()
+    if ext == ".json":
+        return "json"
+    if ext == ".csv":
+        return "csv"
+    if ext in {".yaml", ".yml"}:
+        return "yaml"
+    media = content_type.split(";", 1)[0].strip().lower()
+    if media in {"application/json", "text/json"}:
+        return "json"
+    if media in {"text/csv", "application/csv"}:
+        return "csv"
+    if media in {"application/yaml", "text/yaml", "application/x-yaml", "text/x-yaml"}:
+        return "yaml"
+    stripped = text.lstrip("\ufeff \t\r\n")
+    if stripped.startswith("{") or stripped.startswith("["):
+        return "json"
+    if _looks_like_csv(text):
+        return "csv"
+    return "yaml"
+
+
+def _json_document(body: str) -> dict[str, object]:
+    import json
+
+    try:
+        loaded = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise CoordCardError("Coord card is not valid JSON.") from exc
+    if not isinstance(loaded, dict):
+        raise CoordCardError("Coord card must be a mapping.")
+    return loaded
+
+
+def _yaml_document(body: str) -> dict[str, object]:
+    try:
+        loaded = yaml.safe_load(body)
+    except yaml.YAMLError as exc:
+        raise CoordCardError("Coord card is not valid YAML or CSV.") from exc
+    if not isinstance(loaded, dict):
+        raise CoordCardError("Coord card must be a mapping.")
+    return loaded
 
 
 def card_from_mapping(
@@ -218,6 +313,7 @@ def card_from_mapping(
     if "templates" in payload:
         templates = _templates(payload.get("templates"))
     bullseye_name, bullseye_lat, bullseye_lon = _bullseye(payload.get("bullseye"))
+    schema_version = _schema_version(payload.get("schema_version", ""))
     types: list[CoordType] = []
     for entry in raw_types:
         if not isinstance(entry, dict):
@@ -236,6 +332,7 @@ def card_from_mapping(
         bullseye_name=bullseye_name,
         bullseye_latitude=bullseye_lat,
         bullseye_longitude=bullseye_lon,
+        schema_version=schema_version,
     )
 
 
@@ -301,15 +398,18 @@ def _reject_overlaps(types: list[CoordType]) -> None:
             previous_end = end
 
 
-def _from_csv(
-    text: str,
-    mismatch_meters: float,
-    *,
-    ellipse_unit: str,
-    magnetic_declination_degrees: float,
-    cat_ce: tuple[tuple[int, float], ...],
-    confidence_terms: tuple[ConfidenceTerm, ...],
-) -> CoordCard:
+def _schema_version(value: object) -> str:
+    from analytics.domain.card_schema import SchemaCatalogError, version_text
+
+    if value is None or value == "":
+        return ""
+    try:
+        return version_text(value)
+    except SchemaCatalogError as exc:
+        raise CoordCardError(str(exc)) from exc
+
+
+def _csv_document(text: str) -> dict[str, object]:
     reader = csv.DictReader(io.StringIO(text))
     if reader.fieldnames is None:
         raise CoordCardError("Coord card CSV needs a header.")
@@ -319,7 +419,9 @@ def _from_csv(
         raise CoordCardError("Coord card CSV needs name, kind, start, end, and fields.")
     types: list[dict[str, object]] = []
     templates: list[dict[str, object]] = []
-    distance = mismatch_meters
+    distance = 0.0
+    distance_set = False
+    schema_version = ""
     ingest: list[str] = []
     ingest_set = False
     default_rooms: list[str] = []
@@ -336,6 +438,9 @@ def _from_csv(
             continue
         if lowered.get("mismatch_meters"):
             distance = _number("mismatch_meters", lowered["mismatch_meters"])
+            distance_set = True
+        if lowered.get("schema_version"):
+            schema_version = lowered["schema_version"]
         if lowered.get("ingest_rooms"):
             ingest = _room_names(lowered["ingest_rooms"])
             ingest_set = True
@@ -366,7 +471,11 @@ def _from_csv(
         if type_rooms is not None:
             entry["rooms"] = type_rooms
         types.append(entry)
-    payload: dict[str, object] = {"types": types, "mismatch_meters": distance}
+    payload: dict[str, object] = {"types": types}
+    if distance_set:
+        payload["mismatch_meters"] = distance
+    if schema_version:
+        payload["schema_version"] = schema_version
     if ingest_set or publish_set:
         rooms: dict[str, object] = {}
         if ingest_set:
@@ -380,14 +489,7 @@ def _from_csv(
         payload["rooms"] = rooms
     if templates:
         payload["templates"] = templates
-    return card_from_mapping(
-        payload,
-        mismatch_meters,
-        ellipse_unit=ellipse_unit,
-        magnetic_declination_degrees=magnetic_declination_degrees,
-        cat_ce=cat_ce,
-        confidence_terms=confidence_terms,
-    )
+    return payload
 
 
 def _looks_like_csv(text: str) -> bool:

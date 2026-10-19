@@ -1,0 +1,283 @@
+{
+  "mismatch_meters": 250,
+  "ellipse_unit": "nmi",
+  "magnetic_declination_degrees": 0,
+  "cat_ce": {
+    "unit": "m",
+    "radii": {
+      "I": 6,
+      "II": 15,
+      "III": 30,
+      "IV": 91
+    }
+  },
+  "confidence_terms": [
+    {
+      "phrase": "POSS LOW",
+      "level": "possible",
+      "band": "low",
+      "weight": 0.25
+    },
+    {
+      "phrase": "POSS HIGH",
+      "level": "possible",
+      "band": "high",
+      "weight": 0.45
+    },
+    {
+      "phrase": "PROB",
+      "level": "probable",
+      "weight": 0.7,
+      "aliases": [
+        "PROBABLE"
+      ]
+    },
+    {
+      "phrase": "CERTAIN",
+      "level": "confirmed",
+      "weight": 1.0
+    }
+  ],
+  "bullseye": {
+    "name": ""
+  },
+  "rooms": {
+    "ingest": [
+      "room-tacrep-ingest"
+    ],
+    "publish": {
+      "default": [
+        "room-tacrep-publish"
+      ],
+      "republish_on_higher_level": true,
+      "rules": [
+        {
+          "confidence": [
+            "POSS LOW",
+            "POSS HIGH"
+          ],
+          "cat_min": 1,
+          "cat_max": 2,
+          "types": [
+            "ELINT",
+            "IMINT"
+          ],
+          "rooms": [
+            "room-precise"
+          ]
+        },
+        {
+          "confidence": [
+            "CERTAIN"
+          ],
+          "rooms": [
+            "room-certain",
+            "room-tacrep-publish"
+          ]
+        }
+      ]
+    }
+  },
+  "types": [
+    {
+      "name": "MTI",
+      "kind": "J",
+      "start": 400,
+      "end": 499,
+      "fields": [
+        "callsign",
+        "id",
+        "activity",
+        "bullseye",
+        "link16",
+        "location",
+        "tai_msr",
+        "cat",
+        "time",
+        "fillins"
+      ],
+      "rooms": {
+        "ingest": [
+          "room-mti-ingest"
+        ],
+        "publish": [
+          "room-mti-publish"
+        ]
+      }
+    },
+    {
+      "name": "IMINT",
+      "kind": "I",
+      "start": 100,
+      "end": 199,
+      "fields": [
+        "callsign",
+        "id",
+        "equipment",
+        "location",
+        "elevation",
+        "tai",
+        "time",
+        "cat"
+      ],
+      "rooms": {
+        "ingest": [
+          "room-imint-ingest"
+        ],
+        "publish": [
+          "room-imint-publish"
+        ]
+      }
+    },
+    {
+      "name": "ELINT",
+      "kinds": [
+        "E",
+        "G"
+      ],
+      "start": 500,
+      "end": 599,
+      "fields": [
+        "callsign",
+        "id",
+        "entity",
+        "activity",
+        "location",
+        "tai",
+        "ellipse",
+        "orientation",
+        "cat",
+        "time",
+        "fillins"
+      ],
+      "rooms": {
+        "ingest": [
+          "room-elint-ingest"
+        ],
+        "publish": [
+          "room-elint-publish"
+        ]
+      }
+    },
+    {
+      "name": "FUSED",
+      "kind": "F",
+      "start": 900,
+      "end": 999,
+      "fields": [
+        "callsign",
+        "id",
+        "subject",
+        "location",
+        "cat",
+        "time",
+        "correlates"
+      ],
+      "rooms": {
+        "ingest": [
+          "room-fused-ingest"
+        ],
+        "publish": [
+          "room-fused-publish"
+        ]
+      }
+    }
+  ],
+  "templates": [
+    {
+      "name": "ADHOC",
+      "detect": "(?i)\\*\\*\\*START\\s+ADHOC",
+      "separator": "lines",
+      "evidence": "tasking",
+      "classification": true,
+      "rooms": {
+        "ingest": [
+          "room-adhoc-ingest"
+        ],
+        "publish": [
+          "room-adhoc-publish"
+        ]
+      },
+      "fields": [
+        {
+          "name": "effects",
+          "type": "effects",
+          "line": 1
+        },
+        {
+          "name": "assets",
+          "type": "assets",
+          "line": 2
+        },
+        {
+          "name": "target",
+          "type": "name_id",
+          "line": 3
+        },
+        {
+          "name": "location",
+          "type": "location",
+          "line": 4
+        },
+        {
+          "name": "eei",
+          "type": "equipment",
+          "line": 5
+        },
+        {
+          "name": "reporting",
+          "type": "reporting",
+          "line": 6
+        }
+      ],
+      "channel": "fake-adhoc-channel"
+    },
+    {
+      "name": "SITREP",
+      "detect": "(?i)\\bSITREP\\b",
+      "separator": "comma",
+      "evidence": "report",
+      "classification": true,
+      "rooms": {
+        "ingest": [
+          "room-sitrep-ingest"
+        ],
+        "publish": [
+          "room-sitrep-publish"
+        ]
+      },
+      "fields": [
+        {
+          "name": "callsign",
+          "type": "text"
+        },
+        {
+          "name": "equipment",
+          "type": "equipment_at"
+        },
+        {
+          "name": "location",
+          "type": "location"
+        },
+        {
+          "name": "time",
+          "type": "time"
+        },
+        {
+          "name": "frequency",
+          "type": "frequency"
+        },
+        {
+          "name": "heading",
+          "type": "heading"
+        },
+        {
+          "name": "activity",
+          "type": "activity"
+        }
+      ]
+    }
+  ],
+  "schema_version": "1",
+  "notes": "FAKE extra field kept so a new exercise key does not need a schema change."
+}

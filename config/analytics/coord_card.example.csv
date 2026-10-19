@@ -1,7 +1,7 @@
-name,kind,start,end,mismatch_meters,fields,ingest,publish,ingest_rooms,publish_default,confidence,cat_min,cat_max,rule_types,publish_rooms,template,detect,evidence,classification
-MTI,J,400,499,250,"callsign,id,activity,bullseye,link16,location,tai_msr,cat,time,fillins",room-mti-ingest,room-mti-publish,room-tacrep-ingest,room-tacrep-publish,POSS LOW|POSS HIGH,1,2,ELINT|IMINT,room-precise,,,,
-IMINT,I,100,199,250,"callsign,id,equipment,location,elevation,tai,time,cat",room-imint-ingest,room-imint-publish,,,CERTAIN,,,,room-certain|room-tacrep-publish,,,,
-ELINT,E/G,500,599,250,"callsign,id,entity,activity,location,tai,ellipse,orientation,cat,time,fillins",room-elint-ingest,room-elint-publish,,,,,,,,,,,
-FUSED,F,900,999,250,"callsign,id,subject,location,cat,time,correlates",room-fused-ingest,room-fused-publish,,,,,,,,,,,
-ADHOC,,,,,effects:effects:1;assets:assets:2;target:name_id:3;location:location:4;eei:equipment:5;reporting:reporting:6,room-adhoc-ingest,room-adhoc-publish,,,,,,,,lines,(?i)\*\*\*START\s+ADHOC,tasking,true
-SITREP,,,,,callsign:text;equipment:equipment_at;location:location;time:time;frequency:frequency;heading:heading;activity:activity,room-sitrep-ingest,room-sitrep-publish,,,,,,,,comma,(?i)\bSITREP\b,report,true
+name,kind,start,end,mismatch_meters,fields,ingest,publish,ingest_rooms,publish_default,confidence,cat_min,cat_max,rule_types,publish_rooms,template,detect,evidence,classification,schema_version
+MTI,J,400,499,250,"callsign,id,activity,bullseye,link16,location,tai_msr,cat,time,fillins",room-mti-ingest,room-mti-publish,room-tacrep-ingest,room-tacrep-publish,POSS LOW|POSS HIGH,1,2,ELINT|IMINT,room-precise,,,,,1
+IMINT,I,100,199,250,"callsign,id,equipment,location,elevation,tai,time,cat",room-imint-ingest,room-imint-publish,,,CERTAIN,,,,room-certain|room-tacrep-publish,,,,,1
+ELINT,E/G,500,599,250,"callsign,id,entity,activity,location,tai,ellipse,orientation,cat,time,fillins",room-elint-ingest,room-elint-publish,,,,,,,,,,,,1
+FUSED,F,900,999,250,"callsign,id,subject,location,cat,time,correlates",room-fused-ingest,room-fused-publish,,,,,,,,,,,,1
+ADHOC,,,,,effects:effects:1;assets:assets:2;target:name_id:3;location:location:4;eei:equipment:5;reporting:reporting:6,room-adhoc-ingest,room-adhoc-publish,,,,,,,,lines,(?i)\*\*\*START\s+ADHOC,tasking,true,1
+SITREP,,,,,callsign:text;equipment:equipment_at;location:location;time:time;frequency:frequency;heading:heading;activity:activity,room-sitrep-ingest,room-sitrep-publish,,,,,,,,comma,(?i)\bSITREP\b,report,true,1

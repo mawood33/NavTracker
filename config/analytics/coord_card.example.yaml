@@ -20,6 +20,9 @@
 # rooms.ingest is the card-wide ingest default. Each type and template
 # can set its own ingest and publish rooms. A confidence/CAT rule on
 # rooms.publish wins for a matching notice. Fake room ids only.
+# schema_version selects a JSON Schema. The bundled catalog's default
+# is "1". A card without this field uses that default.
+schema_version: "1"
 mismatch_meters: 250
 ellipse_unit: nmi
 magnetic_declination_degrees: 0

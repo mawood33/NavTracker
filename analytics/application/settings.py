@@ -1,6 +1,6 @@
 """Analytics settings. The loader in infrastructure fills this dataclass."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from analytics.application.failover import ClairvoyantFailover
 from analytics.domain.assessment import ConfidencePolicy
@@ -10,6 +10,7 @@ from analytics.domain.grid import GridPolicy
 from analytics.domain.reports import ReportPolicy
 from analytics.domain.routing import VehicleProfile
 from analytics.domain.thresholds import AnalysisThresholds
+from navtracker_common.chatsurfer import ChatReadSpec
 
 
 @dataclass(frozen=True)
@@ -99,3 +100,17 @@ class AnalyticsSettings:
     publish_rules_text: str = ""
     republish_on_higher_level: bool = True
     vacant_evidence_weight: float = 0.25
+    coord_card_schema_path: str = ""
+    chat_read_enabled: bool = True
+    chat_read: ChatReadSpec = field(default_factory=ChatReadSpec)
+    chat_ingest_mode: str = "websocket"
+    chat_backfill_minutes: float = 60.0
+    chat_page_size: int = 100
+    chat_exercise_only: bool = False
+    chat_skip_bots: tuple[str, ...] = ()
+    chat_seen_limit: int = 2000
+    chat_scrub_poll_seconds: float = 60.0
+    chat_failover_max_attempts: int = 5
+    chat_failover_backoff_initial_seconds: float = 1.0
+    chat_failover_backoff_cap_seconds: float = 30.0
+    chat_failover_probe_interval_seconds: float = 60.0
