@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>Example Complex</name>
+  <Placemark>
+    <name>Pad</name>
+    <ExtendedData><Data name="type"><value>launch</value></Data></ExtendedData>
+    <Polygon>
+      <outerBoundaryIs>
+        <LinearRing>
+          <coordinates>20,10,0 21,10,0 21,11,0 20,10,0</coordinates>
+        </LinearRing>
+      </outerBoundaryIs>
+    </Polygon>
+  </Placemark>
+</Document>
+</kml>

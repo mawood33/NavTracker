@@ -1,0 +1,83 @@
+# Backend analytics. Independent of Navixy. Development leaves Clairvoyant
+# off so the process can start with only reference files and ChatSurfer.
+analytics:
+  http_host: "0.0.0.0"
+  http_port: 8080
+  reference_dir: "/data/reference"
+  publish_events: false
+  analysis_interval_seconds: 30
+  chat_poll_seconds: 15
+  # Navixy speeds copied into ChatSurfer messages are kilometers per hour.
+  chat_speed_unit: kmh
+  confidence:
+    initial_confidence: 0.2
+    probable_at: 0.55
+    confirmed_at: 0.8
+    window_seconds: 86400
+    decay_per_day: 0
+  grid:
+    # H3 resolution 8 is about a 460 m hex edge. 0 disables half-life decay.
+    resolution: 8
+    window_seconds: 86400
+    decay_half_life_seconds: 0
+    hotspot_score: 1.5
+  map:
+    provider: none
+    tile_url: ""
+    attribution: ""
+    min_zoom: 0
+    max_zoom: 19
+  routing:
+    engine: msr
+    cache_ttl_seconds: 300
+    cache_size: 256
+    snap_meters: 500
+    join_meters: 40
+  reports:
+    window_seconds: 86400
+    weight: 0.1
+    type_weight: 0.12
+    cap: 0.3
+
+chatsurfer:
+  base_url: "https://chatsurfer.nro.mil"
+  domain_id: "chatsurferxmppunclass"
+  room_name: "freedom_flag"
+  room_name_encrypted: "freedom_flag_encrypted"
+  read_rooms:
+    - freedom_flag
+  tacrep_rooms: []
+  nickname: "navtracker-analytics-dev"
+  classification: "UNCLASSIFIED//FOUO"
+  user_high_classification: "UNCLASSIFIED//FOUO"
+  client_cert: "/data/certs/client/tls.crt"
+  client_key: "/data/certs/client/tls.key"
+  rate_limit: 60
+  max_message_size: 4000
+  encryption_required: true
+
+clairvoyant:
+  enabled: false
+  mode: websocket
+  ws_url: ""
+  base_url: ""
+  layer: "default"
+  api_key: ""
+  report_layers: []
+
+frontend:
+  enabled: false
+  ingest_url: ""
+
+reference:
+  columns:
+    name: "Name/ID"
+    latitude_dms: "DMS Lat"
+    longitude_dms: "DMS Long"
+    mgrs: "MGRS"
+
+crypto:
+  encryption_cert: "/data/certs/client/tls.crt"
+  encryption_key: "/data/certs/client/tls.key"
+  mode: pem
+  fernet_key: None

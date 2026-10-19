@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NavTracker analytics</title>
+  <style>
+    body { font-family: sans-serif; margin: 1.5rem; }
+    label { display: block; margin-top: 0.6rem; }
+    pre { white-space: pre-wrap; background: #f4f4f4; padding: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>NavTracker analytics</h1>
+  <p id="basemap">Basemap: waiting for the snapshot.</p>
+  <p id="routing">Routing: waiting for the snapshot.</p>
+  <label>WebSocket <input id="ws" size="48" value="ws://localhost:8080/ws"></label>
+  <button id="connect" type="button">Connect</button>
+  <h2>Sites</h2>
+  <ul id="sites"></ul>
+  <h2>Route</h2>
+  <label>From <input id="from" value=""></label>
+  <label>To <input id="to" value=""></label>
+  <label>Profile <input id="profile" value="truck"></label>
+  <button id="route" type="button">Estimate</button>
+  <pre id="result"></pre>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const wsInput = document.getElementById("ws");
+    if (params.get("ws")) wsInput.value = params.get("ws");
+    const api = params.get("api") || "http://localhost:8080";
+    let socket;
+    document.getElementById("connect").onclick = () => {
+      if (socket) socket.close();
+      socket = new WebSocket(wsInput.value);
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        const basemap = message.basemap || {};
+        const routing = message.routing || {};
+        document.getElementById("basemap").textContent =
+          "Basemap: " + (basemap.provider || "unknown") +
+          (basemap.attribution ? " (" + basemap.attribution + ")" : "");
+        const names = (routing.profiles || []).map((item) => item.name).join(", ");
+        document.getElementById("routing").textContent =
+          "Routing: " + (routing.engine || "unknown") +
+          (names ? " profiles " + names : "");
+        const sites = message.sites || [];
+        const list = document.getElementById("sites");
+        if (message.type === "snapshot") {
+          list.replaceChildren();
+          for (const site of sites) {
+            const item = document.createElement("li");
+            item.textContent = site.name + " " + site.status + " " + site.confidence;
+            list.appendChild(item);
+          }
+        }
+      };
+    };
+    document.getElementById("route").onclick = async () => {
+      const query = new URLSearchParams({
+        from_site: document.getElementById("from").value,
+        to_site: document.getElementById("to").value,
+        profile: document.getElementById("profile").value || "truck"
+      });
+      const response = await fetch(api + "/routing?" + query.toString());
+      document.getElementById("result").textContent = await response.text();
+    };
+  </script>
+</body>
+</html>

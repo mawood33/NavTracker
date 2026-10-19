@@ -73,7 +73,41 @@ python scripts/validate_config.py
 python scripts/validate_config.py development
 ```
 
-The check uses `config/development.yaml`, `config/staging.yaml`, and `config/production.yaml`. API keys and the key material for the crypto mode in that file are dummies. The ChatSurfer client certificate is a local dummy pair, so `/data/certs` is not read. It does not open a Navixy or ChatSurfer connection. An invalid setting exits locally with `APP_ENV=<environment> setting=<NAME>: ...`. In GitHub Actions the same line is a `::warning` annotation.
+The check uses `config/development.yaml`, `config/staging.yaml`, and `config/production.yaml`, then the same environments under `config/analytics/`. API keys and the key material for the crypto mode in that file are dummies. The ChatSurfer client certificate is a local dummy pair, so `/data/certs` is not read. It does not open a Navixy, ChatSurfer, Clairvoyant, tile, or routing connection. An invalid setting exits locally with `APP_ENV=<environment> setting=<NAME>: ...`. In GitHub Actions the same line is a `::warning` annotation. The script exits non-zero when either the ingest check or the analytics check fails.
+
+## Analytics backend
+
+`analytics` is a second process. It does not read Navixy. It shares ChatSurfer, crypto, and settings helpers with the ingest worker through the `navtracker_common` package under `packages/navtracker_common`. Ingest modules re-export those helpers, so the ingest process behavior is unchanged.
+
+```bash
+docker compose up --build analytics
+```
+
+`APP_ENV` selects `config/analytics/<APP_ENV>.yaml`. The HTTP API listens on port 8080. Reference files (Player Data CSV/XLSX/KML and MSR KML/KMZ) are read from `ANALYTICS_REFERENCE_DIR` (`/data/reference` in Compose, mounted from `./reference`).
+
+GPS can arrive from ChatSurfer rooms (`chatsurfer.read_rooms`) and, when enabled, from a Clairvoyant websocket with API failover. Staging and production enable Clairvoyant with placeholder URLs. Development leaves it off. The Clairvoyant message shapes are assumed and documented in `analytics/infrastructure/clairvoyant.py`.
+
+TACREP rooms (`chatsurfer.tacrep_rooms` or `CHAT_SURFER_TACREP_ROOMS`) and Clairvoyant report layers (`clairvoyant.report_layers`, only when Clairvoyant is enabled) are non-GPS evidence. Reports are deduplicated, keep source, layer, and message id, and can raise site confidence.
+
+Sites keep a set of types (`hide`, `launch`, `transload`), a status (`possible`, `probable`, `confirmed`), and a numeric confidence. Imports start at `possible` with confidence 0.2. Decay is off unless `analytics.confidence.decay_per_day` is greater than 0. Hex activity uses H3 resolution 8. MSR corridors default to a 50 meter buffer.
+
+### Basemap
+
+`analytics.map.provider` is `none` (default, no tile host), `osm` (public OpenStreetMap tiles, no API key), or `xyz` (requires `ANALYTICS_MAP_TILE_URL`). The choice is included in the WebSocket snapshot and the OGC landing page. No API key is written into the repository.
+
+### Routing
+
+`analytics.routing.engine` is `msr` (default), `osrm`, `valhalla`, or `graphhopper`. `msr` routes along imported MSR corridors and makes no network call. The other engines need `ANALYTICS_ROUTING_BASE_URL` (YAML `osrm_base_url`, `valhalla_base_url`, or `graphhopper_base_url`). Travel time uses the vehicle profile (`max_speed_mps`, weight class, type, and an ETA factor). OSRM does not receive height, weight, or hazmat. Valhalla receives a top speed only. GraphHopper receives the profile name. Successful engine responses are cached. `GET /routing?from_site=&to_site=&profile=truck` returns the line and the ETA. The same route is `GET /ogc/collections/itineraries/items` with those query parameters.
+
+### Outputs
+
+- `GET /ws` sends a versioned snapshot (`navtracker.analytics` version 1) and then diffs.
+- `GET /ogc` is an OGC API - Features landing page. Collections are sites, cells, routes, evidence, and itineraries. Item requests accept `bbox` and `datetime`.
+- `GET /geojson`, `GET /heatmap`, and `GET /kml` export the current picture. `GET /kml/networklink` is a KML NetworkLink pointed at `/kml`.
+
+OGC SensorThings, WMS/WMTS, and vector tiles are not implemented.
+
+The optional frontend is off unless `frontend.enabled` is true, which also requires `ANALYTICS_FRONTEND_INGEST_URL`. The process then POSTs the same snapshot and diff documents to that URL. `docker compose --profile frontend up analytics-frontend` serves `analytics/frontend/index.html` on port 8081. That page is a NavTracker viewer for `/ws` and `/routing`. It is not a TransloadOracle UI. TransloadOracle was not readable from this environment.
 
 ## Rollback and emergency operation
 
