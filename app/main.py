@@ -1,10 +1,7 @@
 import asyncio
 import logging
 
-from app.application.services import (
-    TrackerPollingService,
-    TrackerWebSocketService,
-)
+from app.application.supervisor import IngestionSupervisor
 from app.infrastructure.chatsurfer import ChatSurferApiClient
 from app.infrastructure.config import load_settings
 from app.infrastructure.crypto import CryptoHandler
@@ -64,28 +61,22 @@ async def main() -> None:
         base_url=settings.navixy_base_url,
         api_key=settings.navixy_api_key,
     )
+    navixy_ws = NavixyWebSocketClient(
+        ws_url=settings.navixy_ws_url,
+        api_key=settings.navixy_api_key,
+    )
+    supervisor = IngestionSupervisor(
+        reader=navixy_api,
+        stream=navixy_ws,
+        publisher=chat_client,
+        tracker_ids=settings.tracker_ids,
+        mode=settings.navixy_mode,
+        poll_interval_seconds=settings.poll_interval_seconds,
+        policy=settings.failover,
+    )
 
     try:
-        if settings.source_mode.lower() == "websocket":
-            source = NavixyWebSocketClient(
-                ws_url=settings.navixy_ws_url,
-                api_key=settings.navixy_api_key,
-            )
-
-            service = TrackerWebSocketService(
-                source=source,
-                publisher=chat_client,
-                tracker_ids=settings.tracker_ids,
-            )
-        else:
-            service = TrackerPollingService(
-                source=navixy_api,
-                publisher=chat_client,
-                tracker_ids=settings.tracker_ids,
-                interval_seconds=settings.poll_interval_seconds,
-            )
-        logging.info(f'Tracker API source mode: {settings.source_mode}')
-        await service.run()
+        await supervisor.run()
     except Exception as e:
         logging.exception(f'Error starting app: {e}')
     finally:

@@ -8,7 +8,7 @@ class TrackerPosition:
     tracker_id: int
     latitude: float
     longitude: float
-    timestamp: datetime
+    timestamp: datetime | None = None
     speed: float | None = None
     heading: float | None = None
     altitude: float | None = None
@@ -21,7 +21,11 @@ class TrackerPosition:
             "tracker_id": self.tracker_id,
             "latitude": self.latitude,
             "longitude": self.longitude,
-            "timestamp": self.timestamp.isoformat(),
+            "timestamp": (
+                self.timestamp.isoformat()
+                if self.timestamp is not None
+                else None
+            ),
             "speed": self.speed,
             "heading": self.heading,
             "altitude": self.altitude,

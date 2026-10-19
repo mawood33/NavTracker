@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -47,12 +47,11 @@ class NavixyApiClient:
         location = gps["location"]
 
         updated = gps.get("updated")
-        if updated:
-            timestamp = datetime.fromisoformat(
-                updated.replace("Z", "+00:00")
-            )
-        else:
-            timestamp = datetime.now(timezone.utc)
+        timestamp = (
+            datetime.fromisoformat(updated.replace("Z", "+00:00"))
+            if updated
+            else None
+        )
 
         return TrackerPosition(
             tracker_id=tracker_id,
@@ -65,9 +64,4 @@ class NavixyApiClient:
             connection_status=state.get("connection_status"),
             movement_status=state.get("movement_status"),
             raw=payload,
-        )
-
-    async def stream_positions(self, tracker_ids: list[int]):
-        raise NotImplementedError(
-            "Use NavixyWebSocketClient for WebSocket streaming"
         )
