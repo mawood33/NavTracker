@@ -67,6 +67,24 @@ def test_build_crypto_handler_passes_the_fernet_key():
     assert handler.decrypt(handler.encrypt("ok")) == "ok"
 
 
+@pytest.mark.parametrize("mode", ["pem", "ssh"])
+@pytest.mark.parametrize("fernet_key", [None, "not-a-key"])
+def test_pem_and_ssh_handlers_ignore_the_fernet_key(mode, fernet_key):
+    with pytest.raises(RuntimeError, match=f"{mode} mode requires ENCRYPTION_CERT"):
+        CryptoHandler(mode=mode, fernet_key=fernet_key)
+
+
+def test_fernet_key_for_mode_skips_other_modes():
+    from app.infrastructure.crypto import fernet_key_for_mode
+
+    assert fernet_key_for_mode("pem", "not-a-key") is None
+    assert fernet_key_for_mode("ssh", None) is None
+    with pytest.raises(RuntimeError, match="fernet mode requires FERNET_KEY"):
+        fernet_key_for_mode("fernet", None)
+    key = Fernet.generate_key()
+    assert fernet_key_for_mode("fernet", key) == key
+
+
 def test_build_crypto_handler_skips_crypto_when_encryption_is_off():
     assert (
         build_crypto_handler(

@@ -43,9 +43,9 @@ See `.env.example` for every setting `load_settings` reads. A value in `.env` ov
 
 ## Encryption
 
-`MODE` is `pem`, `ssh`, or `fernet` (`crypto.mode` in YAML). `pem` and `ssh` encrypt with the public certificate at `ENCRYPTION_CERT`. `fernet` encrypts with `FERNET_KEY`, which is passed into `CryptoHandler`.
+`MODE` is `pem`, `ssh`, or `fernet` (`crypto.mode` in YAML). Startup checks only the material that mode uses. The error names the mode and the missing setting.
 
-Fernet mode refuses to start when `FERNET_KEY` is missing, blank, or the YAML literal `None` (PyYAML loads that literal as the string `"None"`, which is unset). A value that is not a url-safe base64-encoded 32-byte key also fails at startup. The process does not generate a key.
+`pem` and `ssh` require `ENCRYPTION_CERT`. They do not require `FERNET_KEY` and do not validate it, so a blank or malformed Fernet key is ignored. `fernet` requires `FERNET_KEY` and passes that key into `CryptoHandler`. A missing key, a blank value, or the YAML literal `None` (PyYAML loads that literal as the string `"None"`, which is unset) fails at startup. A value that is not a url-safe base64-encoded 32-byte key fails only in fernet mode. The process does not generate a key.
 
 ## Run
 

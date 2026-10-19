@@ -15,7 +15,7 @@ from app.application.mode import (
     build_failover_policy,
     resolve_navixy_mode,
 )
-from app.infrastructure.crypto import FERNET_KEY_REQUIRED, parse_fernet_key
+from app.infrastructure.crypto import fernet_key_for_mode, require_public_material
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,11 @@ def load_settings() -> Settings:
         ),
     )
     crypto_mode = _crypto_mode(crypto)
+    encryption_cert = _env(
+        "ENCRYPTION_CERT",
+        crypto.get("encryption_cert", "/data/certs/client/tls.crt"),
+    ).strip()
+    require_public_material(crypto_mode, encryption_cert)
     fernet_key = _fernet_key(crypto, crypto_mode)
 
     return Settings(
@@ -197,10 +202,7 @@ def load_settings() -> Settings:
             ).lower()
             == "true"
         ),
-        encryption_cert=_env(
-            "ENCRYPTION_CERT",
-            crypto.get("encryption_cert", "/data/certs/client/tls.crt"),
-        ),
+        encryption_cert=encryption_cert,
         encryption_key=_env(
             "ENCRYPTION_KEY",
             crypto.get("encryption_key", "/data/certs/client/tls.key"),
@@ -224,6 +226,8 @@ def _crypto_mode(crypto: dict) -> str:
 
 
 def _fernet_key(crypto: dict, mode: str) -> bytes | None:
+    if mode != "fernet":
+        return None
     if "FERNET_KEY" in os.environ:
         configured: bytes | str | None = os.environ["FERNET_KEY"]
     else:
@@ -232,10 +236,7 @@ def _fernet_key(crypto: dict, mode: str) -> bytes | None:
             configured = raw
         else:
             configured = str(raw)
-    key = parse_fernet_key(configured)
-    if mode == "fernet" and key is None:
-        raise RuntimeError(FERNET_KEY_REQUIRED)
-    return key
+    return fernet_key_for_mode(mode, configured)
 
 
 def _pick(env_name: str, yaml_value: object, default: object) -> object:

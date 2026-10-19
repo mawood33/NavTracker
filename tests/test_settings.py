@@ -61,11 +61,30 @@ def test_pem_mode_treats_yaml_none_as_an_unset_fernet_key(monkeypatch):
     assert settings.environment == "development"
 
 
-def test_fernet_mode_rejects_a_missing_key(monkeypatch):
+@pytest.mark.parametrize("mode", ["pem", "ssh"])
+@pytest.mark.parametrize("fernet_key", [None, "", "None", "not-a-key"])
+def test_pem_and_ssh_do_not_require_or_validate_fernet_key(
+    monkeypatch, mode, fernet_key
+):
+    _scrub(monkeypatch)
+    monkeypatch.setenv("MODE", mode)
+    if fernet_key is not None:
+        monkeypatch.setenv("FERNET_KEY", fernet_key)
+    settings = load_settings()
+    assert settings.mode == mode
+    assert settings.fernet_key is None
+
+
+@pytest.mark.parametrize("fernet_key", [None, "", "None"])
+def test_fernet_mode_rejects_a_missing_key(monkeypatch, fernet_key):
     _scrub(monkeypatch)
     monkeypatch.setenv("MODE", "fernet")
-    with pytest.raises(RuntimeError, match=FERNET_KEY_REQUIRED):
+    monkeypatch.setenv("ENCRYPTION_CERT", "")
+    if fernet_key is not None:
+        monkeypatch.setenv("FERNET_KEY", fernet_key)
+    with pytest.raises(RuntimeError, match="fernet mode requires FERNET_KEY") as caught:
         load_settings()
+    assert "ENCRYPTION_CERT" not in str(caught.value)
 
 
 def test_fernet_mode_rejects_the_string_none(monkeypatch):
@@ -76,11 +95,37 @@ def test_fernet_mode_rejects_the_string_none(monkeypatch):
         load_settings()
 
 
-def test_invalid_fernet_key_fails_even_when_mode_is_pem(monkeypatch):
+def test_fernet_mode_rejects_an_invalid_key(monkeypatch):
     _scrub(monkeypatch)
+    monkeypatch.setenv("MODE", "fernet")
     monkeypatch.setenv("FERNET_KEY", "not-a-key")
     with pytest.raises(RuntimeError, match=FERNET_KEY_INVALID):
         load_settings()
+
+
+@pytest.mark.parametrize("mode", ["pem", "ssh"])
+def test_pem_and_ssh_require_encryption_cert_even_with_a_fernet_key(
+    monkeypatch, mode
+):
+    _scrub(monkeypatch)
+    monkeypatch.setenv("MODE", mode)
+    monkeypatch.setenv("ENCRYPTION_CERT", " ")
+    monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode("ascii"))
+    with pytest.raises(
+        RuntimeError, match=f"{mode} mode requires ENCRYPTION_CERT"
+    ):
+        load_settings()
+
+
+def test_fernet_mode_does_not_require_encryption_cert(monkeypatch):
+    _scrub(monkeypatch)
+    key = Fernet.generate_key()
+    monkeypatch.setenv("MODE", "fernet")
+    monkeypatch.setenv("FERNET_KEY", key.decode("ascii"))
+    monkeypatch.setenv("ENCRYPTION_CERT", "")
+    settings = load_settings()
+    assert settings.fernet_key == key
+    assert settings.encryption_cert == ""
 
 
 def test_invalid_crypto_mode_fails_at_startup(monkeypatch):
