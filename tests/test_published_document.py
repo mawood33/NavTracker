@@ -81,7 +81,7 @@ def test_site_fields_match_on_http_websocket_and_ogc():
     service = _service()
     expected = {
         "status": "active",
-        "assessment": "verified",
+        "assessment": "confirmed",
         "confidence": 0.9,
         "types": ["launch"],
         "confidence_band": "confirmed",
@@ -228,6 +228,9 @@ def test_push_adapter_receives_the_schema_2_snapshot():
     asyncio.run(publisher.publish(document))
     posted = json.loads(sent[0])
     assert posted["schema_version"] == 2
-    assert posted["sites"][0]["assessment"] == "verified"
+    assert posted["sites"][0]["assessment"] == "confirmed"
+    assert posted["sites"][0]["assessed_level"] == "confirmed"
+    assert posted["sites"][0]["basis"] == "single_source"
+    assert posted["sites"][0]["disagreement"] is False
     assert posted["sites"][0]["status"] == "active"
     assert posted["tracks"][0]["vehicle_id"] == "truck"

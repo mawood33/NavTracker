@@ -76,6 +76,7 @@ class AnalyticsState:
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _taskings: tuple[Tasking, ...] = ()
     _published_levels: dict[str, int] = field(default_factory=dict)
+    _published_phrases: dict[str, str] = field(default_factory=dict)
     _coord_card: CoordCard = field(default_factory=CoordCard)
     _coord_card_file: Path | None = None
     _schema_catalog: SchemaCatalog = field(default_factory=bundled_catalog)

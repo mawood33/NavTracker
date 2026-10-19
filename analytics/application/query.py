@@ -14,10 +14,16 @@ from analytics.domain.correlation import (
     session_labels,
 )
 from analytics.domain.grid import CellActivity
+from analytics.domain.level_assessment import (
+    LevelCatalog,
+    assess_correlation,
+    level_document,
+)
 from analytics.domain.outputs import (
     basemap_document,
     build_snapshot,
     fusion_document,
+    merge_level,
     routing_metadata,
     site_fields,
 )
@@ -142,6 +148,7 @@ class QueryService:
             routes=state._msrs,
             route_reports=state._msr_reports,
             tracks=state._fixes,
+            levels=self.assessment_catalog(),
             suggested_fused=tuple(
                 fusion_document(item.suggested_fusion)
                 for item in state._correlations
@@ -149,39 +156,55 @@ class QueryService:
             ),
         )
 
+    def assessment_catalog(self) -> LevelCatalog:
+        state = self._state
+        card = state._coord_card
+        return LevelCatalog(
+            state._messages,
+            state._correlations,
+            card.confidence_terms,
+            card.assessment_text,
+        )
+
     def api_sites(self) -> list[dict[str, object]]:
         state = self._state
-        return [site_fields(site) for site in state._sites]
+        catalog = self.assessment_catalog()
+        rows: list[dict[str, object]] = []
+        for site in state._sites:
+            row = site_fields(site)
+            merge_level(row, catalog.for_site(site), assessment=True)
+            rows.append(row)
+        return rows
 
     def tracks(self) -> list[GpsFix]:
         return list(self._state._fixes)
 
     def correlations_document(self) -> dict[str, object]:
         state = self._state
-        return {
-            "correlations": [
-                {
-                    "cell_id": item.cell_id,
-                    "window_start": item.window_start.isoformat(),
-                    "label": item.label,
-                    "best_score": item.best_score,
-                    "source_ids": list(item.source_ids),
-                    "site_types": sorted(item.site_types),
-                    "activity_id": item.activity.activity_id,
-                    "tacrep_type": labels[0],
-                    "block": labels[1],
-                    "warning": labels[2],
-                    "superseded": list(labels[3]),
-                    "linked_ids": list(linked_ids(item.messages)),
-                    "suggested_fused": None
-                    if item.suggested_fusion is None
-                    else fusion_document(item.suggested_fusion),
-                }
-                for item, labels in (
-                    (item, session_labels(item.messages)) for item in state._correlations
-                )
-            ]
-        }
+        terms = state._coord_card.confidence_terms
+        rows: list[dict[str, object]] = []
+        for item in state._correlations:
+            labels = session_labels(item.messages)
+            row: dict[str, object] = {
+                "cell_id": item.cell_id,
+                "window_start": item.window_start.isoformat(),
+                "label": item.label,
+                "best_score": item.best_score,
+                "source_ids": list(item.source_ids),
+                "site_types": sorted(item.site_types),
+                "activity_id": item.activity.activity_id,
+                "tacrep_type": labels[0],
+                "block": labels[1],
+                "warning": labels[2],
+                "superseded": list(labels[3]),
+                "linked_ids": list(linked_ids(item.messages)),
+                "suggested_fused": None
+                if item.suggested_fusion is None
+                else fusion_document(item.suggested_fusion),
+            }
+            row.update(level_document(assess_correlation(item, terms)))
+            rows.append(row)
+        return {"correlations": rows}
 
     def activities_document(self, as_of: datetime | None = None) -> dict[str, object]:
         state = self._state

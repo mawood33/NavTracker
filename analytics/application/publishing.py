@@ -6,12 +6,14 @@ import logging
 from analytics.application.dispatch import (
     active_publish_table,
     destination_rooms,
-    phrase_for_message,
 )
 from analytics.application.events import event_document
 from analytics.application.query import QueryService
 from analytics.application.state import AnalyticsState
-from analytics.domain.confidence_text import ConfidenceTerm
+from analytics.domain.level_assessment import (
+    annotate_report,
+    render_level,
+)
 from analytics.domain.outputs import (
     diff_documents,
 )
@@ -19,7 +21,7 @@ from analytics.domain.publish import (
     PHRASE_RANK,
     PublishNotice,
     PublishTable,
-    phrase_for_confidence,
+    phrase_key,
     should_publish,
 )
 from navtracker_common.errors import PublicationError
@@ -58,8 +60,7 @@ class PublishService:
         if publisher is None:
             return
         table = active_publish_table(state._coord_card, state.settings)
-        high_at = _high_at(state._terms())
-        for notice, rooms in self._notices(table, high_at):
+        for notice, rooms in self._notices(table):
             if not rooms:
                 continue
             if not should_publish(
@@ -72,6 +73,7 @@ class PublishService:
             for room in rooms:
                 await publisher.publish_to(room, notice.body)
             state._published_levels[notice.identity] = notice.level_rank
+            state._published_phrases[notice.identity] = notice.confidence
 
     def publish_output(self) -> dict[str, object] | None:
         """Store a snapshot and broadcast it, or a later diff.
@@ -97,28 +99,24 @@ class PublishService:
     def _notices(
         self,
         table: PublishTable,
-        high_at: float,
     ) -> list[tuple[PublishNotice, tuple[str, ...]]]:
         state = self._state
-        probable = state.settings.confidence.probable_at
-        confirmed = state.settings.confidence.confirmed_at
+        catalog = self._query.assessment_catalog()
         found: list[tuple[PublishNotice, tuple[str, ...]]] = []
         for message in state._messages:
-            phrase = phrase_for_message(
-                message,
-                probable_at=probable,
-                confirmed_at=confirmed,
-                high_at=high_at,
-            )
+            view = catalog.for_message(message)
+            phrase = view.assessed_phrase
             identity = message.serial_full or message.source_message_id
+            previous = state._published_phrases.get(identity, "")
+            remark = render_level(view, catalog.wording, previous=previous)
             notice = PublishNotice(
                 identity=identity,
                 confidence=phrase,
                 cat=message.cat_level,
                 types=(message.tacrep_type,) if message.tacrep_type else (),
                 sources=(message.source_id,) if message.source_id else (),
-                body=message.raw or identity,
-                level_rank=PHRASE_RANK.get(phrase, 0),
+                body=annotate_report(message.raw or identity, remark),
+                level_rank=PHRASE_RANK.get(phrase_key(phrase), 0),
             )
             rooms = destination_rooms(
                 message.tacrep_type,
@@ -132,15 +130,19 @@ class PublishService:
             )
             found.append((notice, rooms))
         for site in state._sites:
-            phrase = phrase_for_confidence(site.confidence, probable, confirmed, high_at)
+            view = catalog.for_site(site)
+            phrase = view.assessed_phrase
+            identity = f"site:{site.name}"
+            previous = state._published_phrases.get(identity, "")
+            remark = render_level(view, catalog.wording, previous=previous)
             notice = PublishNotice(
-                identity=f"site:{site.name}",
+                identity=identity,
                 confidence=phrase,
                 cat=None,
                 types=tuple(sorted(site.site_types)),
                 sources=("site",),
-                body=f"site {site.name} {phrase}",
-                level_rank=PHRASE_RANK.get(phrase, 0),
+                body=f"site {site.name} {remark}",
+                level_rank=PHRASE_RANK.get(phrase_key(phrase), 0),
             )
             rooms = destination_rooms(
                 "",
@@ -154,11 +156,4 @@ class PublishService:
             )
             found.append((notice, rooms))
         return found
-
-
-def _high_at(terms: tuple[ConfidenceTerm, ...]) -> float:
-    for term in terms:
-        if term.phrase == "POSS HIGH":
-            return term.weight
-    return 0.45
 

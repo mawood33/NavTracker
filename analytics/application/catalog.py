@@ -27,7 +27,8 @@ from analytics.domain.card_schema import (
     merge_catalog as merge_schema_catalog,
 )
 from analytics.domain.coordcard import CoordCard, CoordCardError, read_coord_card
-from analytics.domain.outputs import site_fields
+from analytics.domain.level_assessment import LevelCatalog
+from analytics.domain.outputs import merge_level, site_fields
 from analytics.domain.publish import (
     describe_table,
 )
@@ -213,7 +214,15 @@ class CatalogService:
         if not found:
             raise KeyError(name)
         state._sites = tuple(updated)
-        return site_fields(state._named_site(name))
+        named = state._named_site(name)
+        card = state._coord_card
+        catalog = LevelCatalog(
+            state._messages,
+            state._correlations,
+            card.confidence_terms,
+            card.assessment_text,
+        )
+        return merge_level(site_fields(named), catalog.for_site(named), assessment=True)
 
     def _replace_catalog(
         self,

@@ -16,10 +16,12 @@ from analytics.domain.export import (
     kml_network_link,
 )
 from analytics.domain.grid import CellActivity
+from analytics.domain.level_assessment import LevelCatalog
 from analytics.domain.outputs import (
     conformance,
     items_document,
     landing_page,
+    merge_level,
     parse_bbox,
     parse_datetime_interval,
     site_fields,
@@ -146,6 +148,9 @@ class ExportView(Protocol):
     def tracks(self) -> list[GpsFix]:
         """GPS fixes still inside retention and the per-vehicle cap."""
 
+    def assessment_catalog(self) -> LevelCatalog:
+        """Reported and assessed levels for loaded messages and sites."""
+
     def msr_reports(self) -> Mapping[str, tuple[Report, ...]]:
         """Reports correlated to each MSR name."""
 
@@ -202,7 +207,8 @@ def route_request(
     if method == "GET" and target == "/aois":
         return _json(200, {"areas": [_area(area) for area in snapshot.areas()]})
     if method == "GET" and target == "/sites":
-        return _json(200, {"sites": [_site(site) for site in snapshot.sites()]})
+        levels = snapshot.assessment_catalog()
+        return _json(200, {"sites": [_site(site, levels) for site in snapshot.sites()]})
     if method == "GET" and target in {"/tracks", "/api/tracks"}:
         return _json(200, {"tracks": track_rows(snapshot.tracks())})
     if method == "GET" and target == "/msrs":
@@ -492,6 +498,7 @@ def _ogc_collection(
                 bbox,
                 interval,
                 snapshot.tracks() if name == "tracks" else (),
+                snapshot.assessment_catalog(),
             ),
         )
     return _json(404, {"error": "not found"})
@@ -535,19 +542,21 @@ def encode_response(
     return header.encode("ascii") + body
 
 
-def _site(site: Site) -> dict[str, object]:
+def _site(site: Site, levels: LevelCatalog | None = None) -> dict[str, object]:
     document = site_fields(site)
+    if levels is not None:
+        merge_level(document, levels.for_site(site), assessment=True)
     document["origin"] = site.origin
     document["moa"] = site.moa
     document["complex"] = site.complex_name
     document["mgrs"] = site.mgrs
     document["polygon"] = [list(point) for point in site.polygon]
-    document["evidence"] = [_evidence(item) for item in site.evidence]
+    document["evidence"] = [_evidence(item, levels) for item in site.evidence]
     return document
 
 
-def _evidence(item: Evidence) -> dict[str, object]:
-    return {
+def _evidence(item: Evidence, levels: LevelCatalog | None = None) -> dict[str, object]:
+    row: dict[str, object] = {
         "kind": item.kind,
         "weight": item.weight,
         "detail": item.detail,
@@ -561,6 +570,9 @@ def _evidence(item: Evidence) -> dict[str, object]:
         "warning": item.warning,
         "linked_ids": list(item.linked_ids),
     }
+    if levels is not None:
+        merge_level(row, levels.for_evidence(item))
+    return row
 
 
 def _cell(cell: CellActivity) -> dict[str, object]:

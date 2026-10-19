@@ -14,7 +14,13 @@ from datetime import UTC, datetime
 
 from analytics.domain.correlation import SuggestedFusion
 from analytics.domain.grid import CellActivity
-from analytics.domain.reference import Msr, Site
+from analytics.domain.level_assessment import (
+    LevelCatalog,
+    LevelView,
+    level_document,
+    normalize_level,
+)
+from analytics.domain.reference import Evidence, Msr, Site
 from analytics.domain.reports import Report, report_document
 from analytics.domain.routing import VehicleProfile
 from analytics.domain.tracks import GpsFix, dedupe_fixes
@@ -123,8 +129,9 @@ def build_snapshot(
     route_reports: Mapping[str, Sequence[Report]],
     suggested_fused: Sequence[Mapping[str, object]] = (),
     tracks: Sequence[GpsFix] = (),
+    levels: LevelCatalog | None = None,
 ) -> dict[str, object]:
-    evidence = _evidence_rows(sites)
+    evidence = _evidence_rows(sites, levels)
     return {
         "schema": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
@@ -132,7 +139,7 @@ def build_snapshot(
         "as_of": as_of.isoformat(),
         "basemap": dict(basemap),
         "routing": dict(routing),
-        "sites": [_site_row(site) for site in sites],
+        "sites": [_site_row(site, levels) for site in sites],
         "cells": [_cell_row(cell) for cell in cells],
         "routes": [
             _route_row(route, route_reports.get(route.name, ())) for route in routes
@@ -227,6 +234,7 @@ def items_document(
     bbox: tuple[float, float, float, float] | None,
     interval: tuple[datetime | None, datetime | None] | None = None,
     tracks: Sequence[GpsFix] = (),
+    levels: LevelCatalog | None = None,
 ) -> dict[str, object]:
     """GeoJSON features for one OGC collection.
 
@@ -238,7 +246,7 @@ def items_document(
     features: list[dict[str, object]] = []
     if name == "sites":
         features.extend(
-            _site_feature(site)
+            _site_feature(site, levels)
             for site in sites
             if _point_inside(site.latitude, site.longitude, bbox)
             and _any_time((item.observed_at for item in site.evidence), interval)
@@ -257,7 +265,7 @@ def items_document(
                 if _any_time((report.observed_at for report in reports), interval):
                     features.append(_route_feature(route, reports))
     elif name == "evidence":
-        features.extend(_evidence_features(sites, bbox, interval))
+        features.extend(_evidence_features(sites, bbox, interval, levels))
     elif name == "tracks":
         features.extend(
             _track_feature(fix)
@@ -356,13 +364,13 @@ def _private_tiles(tile_url: str) -> bool:
 def site_fields(site: Site) -> dict[str, object]:
     """Site fields shared by HTTP, the WebSocket document, and OGC.
 
-    ``status`` is operational activity. ``assessment`` is the confidence
-    band, with ``confirmed`` exported as ``verified``. ``confidence_band``
-    is the schema 1 ``status`` value and is deprecated.
+    ``status`` is operational activity. ``assessment`` is
+    ``possible``, ``probable``, or ``confirmed``. ``verified`` on input
+    is exported as ``confirmed``. ``confidence_band`` repeats that band
+    and is deprecated.
     """
 
-    band = site.status if site.status in {"possible", "probable", "confirmed"} else "possible"
-    assessment = "verified" if band == "confirmed" else band
+    band = normalize_level(site.status) or "possible"
     activity = site.activity_status
     if activity not in {"unknown", "active", "inactive"}:
         activity = "unknown"
@@ -372,12 +380,29 @@ def site_fields(site: Site) -> dict[str, object]:
         "latitude": site.latitude,
         "longitude": site.longitude,
         "status": activity,
-        "assessment": assessment,
+        "assessment": band,
         "confidence": site.confidence,
         "confidence_band": band,
         "types": sorted(site.site_types),
         "bmoa": site.moa,
     }
+
+
+def merge_level(
+    document: dict[str, object],
+    view: LevelView | None,
+    *,
+    assessment: bool = False,
+) -> dict[str, object]:
+    """Copy reported and assessed fields onto a site, correlation, or evidence row."""
+
+    if view is None:
+        return document
+    document.update(level_document(view))
+    if assessment and view.assessed_level:
+        document["assessment"] = view.assessed_level
+        document["confidence_band"] = view.assessed_level
+    return document
 
 
 def track_document(fix: GpsFix) -> dict[str, object]:
@@ -400,25 +425,29 @@ def track_rows(fixes: Sequence[GpsFix]) -> list[dict[str, object]]:
     return rows
 
 
-def _site_row(site: Site) -> dict[str, object]:
+def _site_row(site: Site, levels: LevelCatalog | None = None) -> dict[str, object]:
     document = site_fields(site)
+    if levels is not None:
+        merge_level(document, levels.for_site(site), assessment=True)
     document["origin"] = site.origin
-    document["evidence"] = [
-        {
-            "kind": item.kind,
-            "weight": item.weight,
-            "detail": item.detail,
-            "site_type": item.site_type,
-            "source": item.source,
-            "layer": item.layer,
-            "message_id": item.message_id,
-            "observed_at": None
-            if item.observed_at is None
-            else item.observed_at.isoformat(),
-        }
-        for item in site.evidence
-    ]
+    document["evidence"] = [_evidence_item(item, levels) for item in site.evidence]
     return document
+
+
+def _evidence_item(item: Evidence, levels: LevelCatalog | None) -> dict[str, object]:
+    row: dict[str, object] = {
+        "kind": item.kind,
+        "weight": item.weight,
+        "detail": item.detail,
+        "site_type": item.site_type,
+        "source": item.source,
+        "layer": item.layer,
+        "message_id": item.message_id,
+        "observed_at": None if item.observed_at is None else item.observed_at.isoformat(),
+    }
+    if levels is not None:
+        merge_level(row, levels.for_evidence(item))
+    return row
 
 
 def _cell_row(cell: CellActivity) -> dict[str, object]:
@@ -451,28 +480,55 @@ def _track_feature(fix: GpsFix) -> dict[str, object]:
     }
 
 
-def _evidence_rows(sites: Sequence[Site]) -> list[dict[str, object]]:
+def _evidence_rows(
+    sites: Sequence[Site],
+    levels: LevelCatalog | None = None,
+) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for site in sites:
         for item in site.evidence:
-            rows.append(
-                {
-                    "site": site.name,
-                    "kind": item.kind,
-                    "source": item.source,
-                    "layer": item.layer,
-                    "message_id": item.message_id,
-                    "detail": item.detail,
-                    "tacrep_type": item.tacrep_type,
-                    "block": item.block,
-                    "warning": item.warning,
-                    "linked_ids": list(item.linked_ids),
-                }
-            )
+            row: dict[str, object] = {
+                "site": site.name,
+                "kind": item.kind,
+                "source": item.source,
+                "layer": item.layer,
+                "message_id": item.message_id,
+                "detail": item.detail,
+                "tacrep_type": item.tacrep_type,
+                "block": item.block,
+                "warning": item.warning,
+                "linked_ids": list(item.linked_ids),
+            }
+            if levels is not None:
+                merge_level(row, levels.for_evidence(item))
+            rows.append(row)
     return rows
 
 
-def _site_feature(site: Site) -> dict[str, object]:
+def _evidence_properties(
+    site: Site,
+    item: Evidence,
+    levels: LevelCatalog | None,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "site": site.name,
+        "kind": item.kind,
+        "detail": item.detail,
+        "source": item.source,
+        "layer": item.layer,
+        "message_id": item.message_id,
+        "tacrep_type": item.tacrep_type,
+        "block": item.block,
+        "warning": item.warning,
+        "linked_ids": list(item.linked_ids),
+        "observed_at": None if item.observed_at is None else item.observed_at.isoformat(),
+    }
+    if levels is not None:
+        merge_level(row, levels.for_evidence(item))
+    return row
+
+
+def _site_feature(site: Site, levels: LevelCatalog | None = None) -> dict[str, object]:
     geometry: dict[str, object]
     if site.latitude is None or site.longitude is None:
         geometry = {"type": "Point", "coordinates": []}
@@ -482,7 +538,7 @@ def _site_feature(site: Site) -> dict[str, object]:
         "type": "Feature",
         "id": site.name,
         "geometry": geometry,
-        "properties": _site_row(site),
+        "properties": _site_row(site, levels),
     }
 
 
@@ -514,6 +570,7 @@ def _evidence_features(
     sites: Sequence[Site],
     bbox: tuple[float, float, float, float] | None,
     interval: tuple[datetime | None, datetime | None] | None,
+    levels: LevelCatalog | None = None,
 ) -> list[dict[str, object]]:
     features: list[dict[str, object]] = []
     for site in sites:
@@ -532,21 +589,7 @@ def _evidence_features(
                         "type": "Point",
                         "coordinates": [site.longitude, site.latitude],
                     },
-                    "properties": {
-                        "site": site.name,
-                        "kind": item.kind,
-                        "detail": item.detail,
-                        "source": item.source,
-                        "layer": item.layer,
-                        "message_id": item.message_id,
-                        "tacrep_type": item.tacrep_type,
-                        "block": item.block,
-                        "warning": item.warning,
-                        "linked_ids": list(item.linked_ids),
-                        "observed_at": None
-                        if item.observed_at is None
-                        else item.observed_at.isoformat(),
-                    },
+                    "properties": _evidence_properties(site, item, levels),
                 }
             )
     return features
@@ -617,7 +660,7 @@ def _site_changes(previous: object, current: object) -> list[dict[str, object]]:
         current,
         "name",
         "site",
-        ("status", "assessment", "confidence", "types"),
+        ("status", "assessment", "confidence", "types", "assessed_phrase", "disagreement"),
     )
 
 

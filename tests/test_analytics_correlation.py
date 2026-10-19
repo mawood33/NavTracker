@@ -339,7 +339,8 @@ def test_transload_oracle_http_contract(tmp_path: Path):
     assert str(stream[1]).startswith("data: ")
     verified = route_request("POST", "/api/sites/A/verify", b"", {}, service)
     assert verified[0] == 200
-    assert verified[1]["assessment"] == "verified"
+    assert verified[1]["assessment"] == "confirmed"
+    assert verified[1]["assessed_level"] == "confirmed"
     assert verified[1]["status"] == "unknown"
     listed = route_request("GET", "/api/sites", b"", {}, service)[1]
     names = {site["id"] for site in listed["sites"]}

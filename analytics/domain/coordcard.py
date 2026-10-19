@@ -30,6 +30,7 @@ from typing import Protocol
 
 import yaml
 
+from analytics.domain.assessment_text import AssessmentWording, wording_from_mapping
 from analytics.domain.catce import (
     DEFAULT_CAT_CE_METERS,
     CatTableError,
@@ -107,6 +108,7 @@ class CoordCard:
     bullseye_longitude: float | None = None
     templates: tuple[object, ...] = ()
     schema_version: str = ""
+    assessment_text: AssessmentWording = AssessmentWording()
 
     def match(self, kind: str, serial: int) -> tuple[CoordType | None, str, str]:
         """Return the type, block label, and warning. The id is kept."""
@@ -309,6 +311,12 @@ def card_from_mapping(
     rooms = None
     if "rooms" in payload:
         rooms = _rooms(payload.get("rooms"))
+    wording = AssessmentWording()
+    if "assessment_text" in payload:
+        try:
+            wording = wording_from_mapping(payload.get("assessment_text"))
+        except ValueError as exc:
+            raise CoordCardError(str(exc)) from exc
     templates: tuple[object, ...] = ()
     if "templates" in payload:
         templates = _templates(payload.get("templates"))
@@ -333,6 +341,7 @@ def card_from_mapping(
         bullseye_latitude=bullseye_lat,
         bullseye_longitude=bullseye_lon,
         schema_version=schema_version,
+        assessment_text=wording,
     )
 
 

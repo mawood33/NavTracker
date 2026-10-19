@@ -37,7 +37,12 @@ confidence_terms:
   - {phrase: POSS LOW, level: possible, band: low, weight: 0.25}
   - {phrase: POSS HIGH, level: possible, band: high, weight: 0.45}
   - {phrase: PROB, level: probable, weight: 0.70, aliases: [PROBABLE]}
-  - {phrase: CERTAIN, level: confirmed, weight: 1.0}
+  - {phrase: CONFIRMED, level: confirmed, weight: 1.0, aliases: [CERTAIN, VERIFIED]}
+assessment_text:
+  single: "SINGLE SOURCE {phrase}"
+  correlated: "ASSESSED {phrase} (FROM {reported} {ids})"
+  disagreement: "REPORTED {reported} ASSESSED {phrase} (FROM {ids})"
+  republish: "WAS {previous} NOW {text}"
 bullseye:
   name: ""
 rooms:
@@ -53,7 +58,7 @@ rooms:
         cat_max: 2
         types: [ELINT, IMINT]
         rooms: [room-precise]
-      - confidence: [CERTAIN]
+      - confidence: [CONFIRMED]
         rooms: [room-certain, room-tacrep-publish]
 types:
   - name: MTI

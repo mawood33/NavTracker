@@ -3,9 +3,12 @@
 Posts the same ``navtracker.analytics`` schema 2 documents the WebSocket
 sends: snapshots, diffs, and retracts. A site has operational ``status``
 (``unknown``, ``active``, ``inactive``), ``assessment``
-(``possible``, ``probable``, ``verified``), numeric ``confidence``, and
-``types``. GPS fixes are ``tracks``. A diff ``op`` is ``upsert`` or
-``remove``. It does not open a connection until ``publish`` is called.
+(``possible``, ``probable``, ``confirmed``), numeric ``confidence``, and
+``types``. ``verified`` is accepted on input and written as ``confirmed``.
+Sites, correlations, and evidence also carry the reported phrase and the
+assessed phrase, basis, and contributor ids. GPS fixes are ``tracks``.
+A diff ``op`` is ``upsert`` or ``remove``. It does not open a connection
+until ``publish`` is called.
 """
 
 import json

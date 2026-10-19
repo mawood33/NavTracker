@@ -6,11 +6,12 @@ The phrases are case-insensitive. ``POSS HIGH`` is kept distinct from
 - POSS LOW → possible / low, weight 0.25
 - POSS HIGH → possible / high, weight 0.45
 - PROB → probable, weight 0.70
-- CERTAIN → confirmed, weight 1.0
+- CONFIRMED → confirmed, weight 1.0
 
-Those weights sit on the same 0–1 scale as site confidence: POSS HIGH
-stays below the default probable threshold (0.55), PROB is probable,
-and CERTAIN is confirmed. A coord card or config table can replace them.
+``CERTAIN`` and ``VERIFIED`` are aliases of ``CONFIRMED``. Those weights
+sit on the same 0–1 scale as site confidence: POSS HIGH stays below the
+default probable threshold (0.55), PROB is probable, and CONFIRMED is
+confirmed. A coord card or config table can replace the phrases.
 """
 
 import re
@@ -33,7 +34,7 @@ DEFAULT_CONFIDENCE_TERMS: tuple[ConfidenceTerm, ...] = (
     ConfidenceTerm("POSS LOW", "possible", "low", 0.25),
     ConfidenceTerm("POSS HIGH", "possible", "high", 0.45),
     ConfidenceTerm("PROB", "probable", "", 0.70, aliases=("PROBABLE",)),
-    ConfidenceTerm("CERTAIN", "confirmed", "", 1.0),
+    ConfidenceTerm("CONFIRMED", "confirmed", "", 1.0, aliases=("CERTAIN", "VERIFIED")),
 )
 
 _LEVELS = {"possible", "probable", "confirmed"}
@@ -110,6 +111,8 @@ def terms_from_mapping(value: object) -> tuple[ConfidenceTerm, ...]:
             raise ConfidenceTableError("Each confidence term must be a mapping.")
         phrase = _phrase(str(item.get("phrase", "") or ""))
         level = str(item.get("level", "") or "").strip().lower()
+        if level == "verified":
+            level = "confirmed"
         band = str(item.get("band", "") or "").strip().lower()
         if level not in _LEVELS:
             raise ConfidenceTableError(f"{phrase} level must be possible, probable, or confirmed.")

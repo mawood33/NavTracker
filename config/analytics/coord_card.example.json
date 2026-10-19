@@ -33,11 +33,18 @@
       ]
     },
     {
-      "phrase": "CERTAIN",
+      "phrase": "CONFIRMED",
       "level": "confirmed",
-      "weight": 1.0
+      "weight": 1.0,
+      "aliases": ["CERTAIN", "VERIFIED"]
     }
   ],
+  "assessment_text": {
+    "single": "SINGLE SOURCE {phrase}",
+    "correlated": "ASSESSED {phrase} (FROM {reported} {ids})",
+    "disagreement": "REPORTED {reported} ASSESSED {phrase} (FROM {ids})",
+    "republish": "WAS {previous} NOW {text}"
+  },
   "bullseye": {
     "name": ""
   },
@@ -68,7 +75,7 @@
         },
         {
           "confidence": [
-            "CERTAIN"
+            "CONFIRMED"
           ],
           "rooms": [
             "room-certain",

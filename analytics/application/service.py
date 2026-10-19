@@ -22,6 +22,7 @@ from analytics.domain.access import AuthPolicy
 from analytics.domain.aoi import AreaOfInterest
 from analytics.domain.correlation import TacrepMessage
 from analytics.domain.grid import CellActivity
+from analytics.domain.level_assessment import LevelCatalog
 from analytics.domain.reference import Msr, Site
 from analytics.domain.reports import Report
 from analytics.domain.tracks import GpsFix
@@ -178,6 +179,9 @@ class AnalyticsService:
 
     def api_sites(self) -> list[dict[str, object]]:
         return self._query.api_sites()
+
+    def assessment_catalog(self) -> LevelCatalog:
+        return self._query.assessment_catalog()
 
     def api_route(
         self,
