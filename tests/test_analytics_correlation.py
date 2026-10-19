@@ -363,6 +363,7 @@ def test_checked_in_defaults_match_transload_oracle():
 
 def test_mapbox_settings_require_a_token(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("CHAT_SURFER_API_KEY", "dummy")
     monkeypatch.delenv("NEXT_PUBLIC_MAPBOX_TOKEN", raising=False)
     monkeypatch.delenv("ANALYTICS_MAPBOX_TOKEN", raising=False)
     monkeypatch.setenv("NEXT_PUBLIC_MAP_PROVIDER", "mapbox")
