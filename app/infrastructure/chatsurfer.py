@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Any
@@ -5,6 +6,7 @@ from typing import Any
 import httpx
 
 from app.domain.entities import TrackerPosition
+from app.domain.errors import PublicationError
 from .crypto import CryptoHandler
 from .limiter import RateLimiter
 
@@ -63,6 +65,22 @@ class ChatSurferApiClient:
         await self.client.aclose()
 
     async def publish(self, position: TrackerPosition) -> dict[str, Any]:
+        try:
+            return await self._publish_message(position)
+        except asyncio.CancelledError:
+            raise
+        except PublicationError:
+            raise
+        except Exception as exc:
+            raise PublicationError(
+                "ChatSurfer publish failed for "
+                f"tracker_id={position.tracker_id}: {exc}"
+            ) from exc
+
+    async def _publish_message(
+        self,
+        position: TrackerPosition,
+    ) -> dict[str, Any]:
         message = json.dumps(
             position.as_dict(),
             separators=(",", ":"),
@@ -71,7 +89,7 @@ class ChatSurferApiClient:
         room_name = self.room_name
         if self.encryption_required:
             if self.crypto_handler is None:
-                raise RuntimeError(
+                raise PublicationError(
                     "Encryption is required but CryptoHandler is unavailable"
                 )
 
@@ -101,7 +119,7 @@ class ChatSurferApiClient:
         if len(message) <= self.max_message_size:
             return message
 
-        raise ValueError(
+        raise PublicationError(
             "Message exceeds ChatSurfer message-size limit: "
             f"{len(message)} > {self.max_message_size}"
         )
@@ -129,6 +147,6 @@ class ChatSurferApiClient:
                 },
             }
 
-        raise RuntimeError(
+        raise PublicationError(
             f"ChatSurfer HTTP {response.status_code}: {body}"
         )

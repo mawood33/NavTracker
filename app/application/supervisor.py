@@ -6,6 +6,12 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from app.application.mode import FailoverPolicy, IngestionMode
+from app.application.publication import (
+    PUBLISH_BACKOFF_CAP_SECONDS,
+    PUBLISH_BACKOFF_INITIAL_SECONDS,
+    PUBLISH_MAX_ATTEMPTS,
+    LatestFixRetry,
+)
 from app.domain.entities import TrackerPosition
 from app.domain.errors import SourceConnectionError
 from app.domain.ports import MessagePublisher, PositionReader, PositionStream
@@ -34,10 +40,11 @@ class IngestionSupervisor:
     ``policy.max_attempts`` consecutive socket failures polls until a
     background probe stays up for ``policy.healthy_window_seconds``.
 
-    Publish errors are logged and do not count as socket failures.
-    The same tracker id + timestamp is published once. A fix with no
-    provider timestamp keeps the last received timestamp for that tracker
-    instead of the wall clock, so a mode switch does not invent a new fix.
+    Publish errors are retried off the read loop and do not count as
+    socket failures. The same tracker id + timestamp is published once.
+    A fix with no provider timestamp keeps the last received timestamp
+    for that tracker instead of the wall clock, so a mode switch does
+    not invent a new fix.
     """
 
     def __init__(
@@ -50,6 +57,9 @@ class IngestionSupervisor:
         poll_interval_seconds: float,
         policy: FailoverPolicy,
         clock: SystemClock | None = None,
+        publish_attempts: int = PUBLISH_MAX_ATTEMPTS,
+        publish_backoff_initial: float = PUBLISH_BACKOFF_INITIAL_SECONDS,
+        publish_backoff_cap: float = PUBLISH_BACKOFF_CAP_SECONDS,
     ):
         self.reader = reader
         self.stream = stream
@@ -58,13 +68,37 @@ class IngestionSupervisor:
         self.poll_interval_seconds = poll_interval_seconds
         self.policy = policy
         self.clock = clock or SystemClock()
+        self.publish_attempts = publish_attempts
+        self.publish_backoff_initial = publish_backoff_initial
+        self.publish_backoff_cap = publish_backoff_cap
         self._ordered_ids = tuple(dict.fromkeys(tracker_ids))
         self._scope = set(self._ordered_ids)
         self._lock = asyncio.Lock()
         self._last_received_at: dict[int, datetime] = {}
         self._published: dict[int, set[datetime]] = {}
+        self._inflight: dict[int, set[datetime]] = {}
+        self._outbox = LatestFixRetry(
+            publisher=publisher,
+            clock=self.clock,
+            on_success=self._mark_published,
+            on_abandon=self._forget_inflight,
+            max_attempts=publish_attempts,
+            backoff_initial=publish_backoff_initial,
+            backoff_cap=publish_backoff_cap,
+        )
 
     async def run(self) -> None:
+        retry_task = asyncio.create_task(
+            self._outbox.run(),
+            name="publish-retry",
+        )
+        try:
+            await self._run_modes()
+        finally:
+            retry_task.cancel()
+            await asyncio.gather(retry_task, return_exceptions=True)
+
+    async def _run_modes(self) -> None:
         if not self._ordered_ids:
             logger.warning(
                 "No tracker ids configured; Navixy ingestion is idle "
@@ -212,7 +246,7 @@ class IngestionSupervisor:
                 continue
             if position.tracker_id not in self._scope:
                 continue
-            await self._publish_deduped(position)
+            await self._publish_isolated(position, "polling continues")
 
     async def _consume_session(
         self,
@@ -237,9 +271,35 @@ class IngestionSupervisor:
                     on_healthy()
                 if item is None or item.tracker_id not in self._scope:
                     continue
-                await self._publish_deduped(item)
+                await self._publish_isolated(
+                    item,
+                    "Navixy socket stays open",
+                )
         finally:
             await session.close()
+
+    async def _publish_isolated(
+        self,
+        position: TrackerPosition,
+        continuing: str,
+    ) -> None:
+        """Publish without letting a publisher failure escape.
+
+        ``SourceConnectionError`` is raised only by the Navixy stream.
+        Anything raised while publishing is contained here so the poll
+        loop and the open socket keep going.
+        """
+
+        try:
+            await self._publish_deduped(position)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Publication handling failed tracker_id=%s; %s",
+                position.tracker_id,
+                continuing,
+            )
 
     async def _publish_deduped(self, position: TrackerPosition) -> None:
         async with self._lock:
@@ -248,21 +308,33 @@ class IngestionSupervisor:
             if timestamp is None:
                 return
             seen = self._published.setdefault(resolved.tracker_id, set())
-            if timestamp in seen:
+            inflight = self._inflight.setdefault(resolved.tracker_id, set())
+            if timestamp in seen or timestamp in inflight:
                 return
-            try:
-                await self.publisher.publish(resolved)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "Publish failed for tracker_id=%s",
-                    resolved.tracker_id,
-                )
-                return
+            inflight.add(timestamp)
+        await self._outbox.submit(resolved)
+
+    async def _mark_published(self, position: TrackerPosition) -> None:
+        timestamp = position.timestamp
+        if timestamp is None:
+            return
+        async with self._lock:
+            seen = self._published.setdefault(position.tracker_id, set())
             seen.add(timestamp)
+            inflight = self._inflight.get(position.tracker_id)
+            if inflight is not None:
+                inflight.discard(timestamp)
             if len(seen) > _PUBLISHED_TIMESTAMPS_PER_TRACKER:
-                self._published[resolved.tracker_id] = {timestamp}
+                self._published[position.tracker_id] = {timestamp}
+
+    async def _forget_inflight(self, position: TrackerPosition) -> None:
+        timestamp = position.timestamp
+        if timestamp is None:
+            return
+        async with self._lock:
+            inflight = self._inflight.get(position.tracker_id)
+            if inflight is not None:
+                inflight.discard(timestamp)
 
     def _resolve_timestamp(self, position: TrackerPosition) -> TrackerPosition:
         if position.timestamp is not None:
