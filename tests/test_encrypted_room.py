@@ -119,6 +119,7 @@ def test_analytics_file_and_env_and_a_missing_room(
         "FERNET_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CHAT_SURFER_API_KEY", "chat-key")
     monkeypatch.setenv("ENCRYPTION_CERT", "/data/certs/client/tls.crt")
     loaded = load_analytics_settings()
     assert loaded.chatsurfer_encryption_required is True
