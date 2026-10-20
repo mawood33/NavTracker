@@ -26,10 +26,14 @@ import csv
 import io
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from analytics.domain.coordinates import OutputCoordinates
 
 import yaml
 
+from analytics.domain.assessment_text import AssessmentWording, wording_from_mapping
 from analytics.domain.catce import (
     DEFAULT_CAT_CE_METERS,
     CatTableError,
@@ -55,10 +59,13 @@ class CoordCardError(ValueError):
 
 
 class MgrsGrid(Protocol):
-    """Converts one MGRS string to latitude and longitude."""
+    """Converts between MGRS and latitude and longitude."""
 
     def to_latlon(self, text: str) -> tuple[float, float] | None:
         """Return the point, or None when the string is not MGRS."""
+
+    def to_mgrs(self, latitude: float, longitude: float, precision_m: int) -> str | None:
+        """Return a compact MGRS string, or None when the point cannot be encoded."""
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,8 @@ class CoordCard:
     bullseye_longitude: float | None = None
     templates: tuple[object, ...] = ()
     schema_version: str = ""
+    assessment_text: AssessmentWording = AssessmentWording()
+    output_coordinates: "OutputCoordinates | None" = None
 
     def match(self, kind: str, serial: int) -> tuple[CoordType | None, str, str]:
         """Return the type, block label, and warning. The id is kept."""
@@ -309,6 +318,20 @@ def card_from_mapping(
     rooms = None
     if "rooms" in payload:
         rooms = _rooms(payload.get("rooms"))
+    wording = AssessmentWording()
+    if "assessment_text" in payload:
+        try:
+            wording = wording_from_mapping(payload.get("assessment_text"))
+        except ValueError as exc:
+            raise CoordCardError(str(exc)) from exc
+    output = None
+    if "output" in payload:
+        from analytics.domain.coordinates import CoordinateFormatError, output_from_mapping
+
+        try:
+            output = output_from_mapping(payload.get("output"))
+        except CoordinateFormatError as exc:
+            raise CoordCardError(str(exc)) from exc
     templates: tuple[object, ...] = ()
     if "templates" in payload:
         templates = _templates(payload.get("templates"))
@@ -333,6 +356,8 @@ def card_from_mapping(
         bullseye_latitude=bullseye_lat,
         bullseye_longitude=bullseye_lon,
         schema_version=schema_version,
+        assessment_text=wording,
+        output_coordinates=output,
     )
 
 
@@ -428,6 +453,13 @@ def _csv_document(text: str) -> dict[str, object]:
     rules: list[dict[str, object]] = []
     publish_set = False
     republish = True
+    output_format = ""
+    output_precision = ""
+    output_spaces = ""
+    output_decimals = ""
+    output_separator = ""
+    output_hemisphere = ""
+    output_types: dict[str, dict[str, str]] = {}
     for row in reader:
         lowered: dict[str, str] = {}
         for key, value in row.items():
@@ -454,6 +486,29 @@ def _csv_document(text: str) -> dict[str, object]:
         if rule is not None:
             rules.append(rule)
             publish_set = True
+        if lowered.get("coordinate_format"):
+            typed = lowered.get("coordinate_type", "")
+            fields = {
+                key: lowered[key]
+                for key in (
+                    "coordinate_format",
+                    "mgrs_precision_m",
+                    "mgrs_spaces",
+                    "latlon_decimals",
+                    "latlon_separator",
+                    "latlon_hemisphere",
+                )
+                if lowered.get(key)
+            }
+            if typed:
+                output_types[typed] = fields
+            else:
+                output_format = lowered["coordinate_format"]
+                output_precision = fields.get("mgrs_precision_m", "")
+                output_spaces = fields.get("mgrs_spaces", "")
+                output_decimals = fields.get("latlon_decimals", "")
+                output_separator = fields.get("latlon_separator", "")
+                output_hemisphere = fields.get("latlon_hemisphere", "")
         if lowered.get("template"):
             templates.append(_csv_template(lowered))
             continue
@@ -489,6 +544,44 @@ def _csv_document(text: str) -> dict[str, object]:
         payload["rooms"] = rooms
     if templates:
         payload["templates"] = templates
+    output_payload = _csv_output(
+        output_format,
+        output_precision,
+        output_spaces,
+        output_decimals,
+        output_separator,
+        output_hemisphere,
+        output_types,
+    )
+    if output_payload is not None:
+        payload["output"] = output_payload
+    return payload
+
+
+def _csv_output(
+    format_name: str,
+    precision: str,
+    spaces: str,
+    decimals: str,
+    separator: str,
+    hemisphere: str,
+    typed: dict[str, dict[str, str]],
+) -> dict[str, object] | None:
+    if not format_name and not typed:
+        return None
+    payload: dict[str, object] = {"coordinate_format": format_name or "mgrs"}
+    if precision:
+        payload["mgrs_precision_m"] = precision
+    if spaces:
+        payload["mgrs_spaces"] = spaces
+    if decimals:
+        payload["latlon_decimals"] = decimals
+    if separator:
+        payload["latlon_separator"] = separator
+    if hemisphere:
+        payload["latlon_hemisphere"] = hemisphere
+    if typed:
+        payload["types"] = typed
     return payload
 
 

@@ -9,13 +9,19 @@ CAT constraints use the category number. CAT I is 1. A rule that sets a
 CAT range does not match a notice that has no CAT.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+
+from analytics.domain.confidence_text import DEFAULT_CONFIDENCE_TERMS, ConfidenceTerm
 
 PHRASE_RANK: dict[str, int] = {
     "POSS LOW": 1,
     "POSS HIGH": 2,
     "PROB": 3,
+    "PROBABLE": 3,
+    "CONFIRMED": 4,
     "CERTAIN": 4,
+    "VERIFIED": 4,
 }
 
 
@@ -100,27 +106,67 @@ def phrase_for_confidence(
     probable_at: float,
     confirmed_at: float,
     high_at: float,
+    terms: Sequence[ConfidenceTerm] | None = None,
 ) -> str:
-    """Map a numeric site confidence onto POSS LOW, POSS HIGH, PROB, or CERTAIN."""
+    """Map a numeric confidence onto the coord-card phrase for that band."""
 
+    table = terms if terms is not None else DEFAULT_CONFIDENCE_TERMS
     if confidence >= confirmed_at:
-        return "CERTAIN"
+        return phrase_for_level("confirmed", table)
     if confidence >= probable_at:
-        return "PROB"
+        return phrase_for_level("probable", table)
     if confidence >= high_at:
+        return phrase_for_level("possible", table, band="high")
+    return phrase_for_level("possible", table, band="low")
+
+
+def phrase_for_level(
+    level: str,
+    terms: Sequence[ConfidenceTerm] | None = None,
+    *,
+    band: str = "",
+) -> str:
+    """Return the operator phrase for an assessed level."""
+
+    table = terms if terms is not None else DEFAULT_CONFIDENCE_TERMS
+    normalized = "confirmed" if level == "verified" else level
+    want = band.strip().lower()
+    if normalized == "possible" and not want:
+        want = "low"
+    for term in table:
+        if term.level != normalized:
+            continue
+        if want and term.band and term.band != want:
+            continue
+        return term.phrase
+    if normalized == "confirmed":
+        return "CONFIRMED"
+    if normalized == "probable":
+        return "PROB"
+    if want == "high":
         return "POSS HIGH"
     return "POSS LOW"
+
+
+def phrase_key(text: str) -> str:
+    """Fold aliases so CERTAIN and VERIFIED route like CONFIRMED."""
+
+    token = " ".join(text.strip().upper().split())
+    if token == "PROBABLE":
+        return "PROB"
+    if token in {"CERTAIN", "VERIFIED", "CONFIRMED"}:
+        return "CONFIRMED"
+    return token
 
 
 def canonicalize_phrase(text: str) -> str:
     """Return one of the four routing phrases."""
 
-    token = " ".join(text.strip().upper().split())
-    if token == "PROBABLE":
-        token = "PROB"
-    if token not in PHRASE_RANK:
+    token = phrase_key(text)
+    if token not in {"POSS LOW", "POSS HIGH", "PROB", "CONFIRMED"}:
         raise PublishTableError(
-            f"Unknown confidence {text!r}. Expected POSS LOW, POSS HIGH, PROB, or CERTAIN."
+            "Unknown confidence "
+            f"{text!r}. Expected POSS LOW, POSS HIGH, PROB, or CONFIRMED."
         )
     return token
 
@@ -206,7 +252,9 @@ def describe_table(table: PublishTable) -> str:
 
 
 def _matches(notice: PublishNotice, rule: PublishRule) -> bool:
-    if rule.confidences and notice.confidence not in rule.confidences:
+    if rule.confidences and phrase_key(notice.confidence) not in {
+        phrase_key(item) for item in rule.confidences
+    }:
         return False
     if rule.cat_min is not None or rule.cat_max is not None:
         if notice.cat is None:

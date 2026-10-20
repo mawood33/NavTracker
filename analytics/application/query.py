@@ -3,10 +3,15 @@
 from datetime import UTC, datetime
 
 from analytics.application.analysis import _activity_document
+from analytics.application.coordinates import (
+    describe_resolution,
+    env_coordinates,
+)
 from analytics.application.dispatch import ingest_room_list
 from analytics.application.events import event_document
 from analytics.application.state import AnalyticsState
 from analytics.domain.aoi import AreaOfInterest
+from analytics.domain.coordinates import coordinate_document
 from analytics.domain.correlation import (
     Correlation,
     advance_for_gap,
@@ -14,11 +19,18 @@ from analytics.domain.correlation import (
     session_labels,
 )
 from analytics.domain.grid import CellActivity
+from analytics.domain.level_assessment import (
+    LevelCatalog,
+    assess_correlation,
+    level_document,
+)
 from analytics.domain.outputs import (
     basemap_document,
     build_snapshot,
     fusion_document,
+    merge_level,
     routing_metadata,
+    site_fields,
 )
 from analytics.domain.reference import (
     Msr,
@@ -27,6 +39,7 @@ from analytics.domain.reference import (
 from analytics.domain.reports import (
     Report,
 )
+from analytics.domain.tracks import GpsFix
 
 
 class QueryService:
@@ -65,6 +78,7 @@ class QueryService:
                     ),
                 }
             },
+            "output_coordinates": self.output_coordinates_document()["effective"],
         }
 
     def events(self) -> list[object]:
@@ -139,6 +153,9 @@ class QueryService:
             cells=state._cells,
             routes=state._msrs,
             route_reports=state._msr_reports,
+            tracks=state._fixes,
+            levels=self.assessment_catalog(),
+            output_coordinates=self.output_coordinates_document(),
             suggested_fused=tuple(
                 fusion_document(item.suggested_fusion)
                 for item in state._correlations
@@ -146,56 +163,76 @@ class QueryService:
             ),
         )
 
+    def output_coordinates_document(self) -> dict[str, object]:
+        state = self._state
+        card = state._coord_card.output_coordinates
+        override = state._output_override
+        spec, source = describe_resolution(state.settings, card, override)
+        env_source = "env" if state.settings.output_coord_configured else "default"
+        return {
+            "effective": coordinate_document(spec, source=source),
+            "override": None
+            if override is None
+            else coordinate_document(override, source="override"),
+            "coord_card": None if card is None else coordinate_document(card, source="coord_card"),
+            "env": coordinate_document(env_coordinates(state.settings), source=env_source),
+        }
+
+    def assessment_catalog(self) -> LevelCatalog:
+        state = self._state
+        card = state._coord_card
+        return LevelCatalog(
+            state._messages,
+            state._correlations,
+            card.confidence_terms,
+            card.assessment_text,
+        )
+
     def api_sites(self) -> list[dict[str, object]]:
         state = self._state
-        return [_api_site(site) for site in state._sites]
+        catalog = self.assessment_catalog()
+        rows: list[dict[str, object]] = []
+        for site in state._sites:
+            row = site_fields(site)
+            merge_level(row, catalog.for_site(site), assessment=True)
+            rows.append(row)
+        return rows
+
+    def tracks(self) -> list[GpsFix]:
+        return list(self._state._fixes)
 
     def correlations_document(self) -> dict[str, object]:
         state = self._state
-        return {
-            "correlations": [
-                {
-                    "cell_id": item.cell_id,
-                    "window_start": item.window_start.isoformat(),
-                    "label": item.label,
-                    "best_score": item.best_score,
-                    "source_ids": list(item.source_ids),
-                    "site_types": sorted(item.site_types),
-                    "activity_id": item.activity.activity_id,
-                    "tacrep_type": labels[0],
-                    "block": labels[1],
-                    "warning": labels[2],
-                    "superseded": list(labels[3]),
-                    "linked_ids": list(linked_ids(item.messages)),
-                    "suggested_fused": None
-                    if item.suggested_fusion is None
-                    else fusion_document(item.suggested_fusion),
-                }
-                for item, labels in (
-                    (item, session_labels(item.messages)) for item in state._correlations
-                )
-            ]
-        }
+        terms = state._coord_card.confidence_terms
+        rows: list[dict[str, object]] = []
+        for item in state._correlations:
+            labels = session_labels(item.messages)
+            row: dict[str, object] = {
+                "cell_id": item.cell_id,
+                "window_start": item.window_start.isoformat(),
+                "label": item.label,
+                "best_score": item.best_score,
+                "source_ids": list(item.source_ids),
+                "site_types": sorted(item.site_types),
+                "activity_id": item.activity.activity_id,
+                "tacrep_type": labels[0],
+                "block": labels[1],
+                "warning": labels[2],
+                "superseded": list(labels[3]),
+                "linked_ids": list(linked_ids(item.messages)),
+                "suggested_fused": None
+                if item.suggested_fusion is None
+                else fusion_document(item.suggested_fusion),
+            }
+            row.update(level_document(assess_correlation(item, terms)))
+            rows.append(row)
+        return {"correlations": rows}
 
     def activities_document(self, as_of: datetime | None = None) -> dict[str, object]:
         state = self._state
         moment = as_of or datetime.now(UTC)
         return {"activities": [_activity_row(item, moment, state) for item in state._correlations]}
 
-
-def _api_site(site: Site) -> dict[str, object]:
-    assessment = "verified" if site.status == "confirmed" else site.status
-    return {
-        "id": site.name,
-        "name": site.name,
-        "latitude": site.latitude,
-        "longitude": site.longitude,
-        "status": site.activity_status,
-        "assessment": assessment,
-        "confidence": site.confidence,
-        "types": sorted(site.site_types),
-        "bmoa": site.moa,
-    }
 
 def _activity_row(
     correlation: Correlation,

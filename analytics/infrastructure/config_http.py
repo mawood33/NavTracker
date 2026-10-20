@@ -10,6 +10,13 @@ from analytics.infrastructure.config_values import (
 from navtracker_common.settings import env_setting, int_setting, pick_setting
 
 
+def _count_setting(name: str, configured: object, default: int) -> int:
+    number = _non_negative(name, pick_setting(name, configured, default))
+    if number != int(number):
+        raise RuntimeError(f"Invalid {name}={configured!r}. Expected an integer.")
+    return int(number)
+
+
 def _ws_origins(analytics: dict[str, object]) -> tuple[str, ...]:
     raw = os.getenv("ANALYTICS_WS_ORIGINS", "").strip()
     if raw:
@@ -67,6 +74,11 @@ def http_settings(analytics: dict[str, object]) -> dict[str, object]:
         "max_ws_queue": int(
                     _byte_setting("ANALYTICS_MAX_WS_QUEUE", analytics.get("max_ws_queue"), 8)
                 ),
+        "max_fixes_per_vehicle": _count_setting(
+            "ANALYTICS_MAX_FIXES_PER_VEHICLE",
+            analytics.get("max_fixes_per_vehicle"),
+            100,
+        ),
         "fix_retention_seconds": _non_negative(
                     "ANALYTICS_FIX_RETENTION_SECONDS",
                     pick_setting(

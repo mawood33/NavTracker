@@ -4,11 +4,13 @@
 using this type, including the attributes tests set on the catalog.
 """
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 
 from analytics.application.analysis import AnalysisService
 from analytics.application.catalog import CatalogService
+from analytics.application.coordinates import override_file, save_override
 from analytics.application.hub import OutputHub
 from analytics.application.ingest import IngestService
 from analytics.application.loop import AnalysisLoop
@@ -20,13 +22,17 @@ from analytics.application.settings import AnalyticsSettings
 from analytics.application.state import AnalyticsState
 from analytics.domain.access import AuthPolicy
 from analytics.domain.aoi import AreaOfInterest
+from analytics.domain.coordinates import CoordinateFormatError, output_from_mapping
 from analytics.domain.correlation import TacrepMessage
 from analytics.domain.grid import CellActivity
+from analytics.domain.level_assessment import LevelCatalog
 from analytics.domain.reference import Msr, Site
 from analytics.domain.reports import Report
 from analytics.domain.tracks import GpsFix
 
 __all__ = ["AnalyticsService", "DocumentSink", "ReportSource"]
+
+logger = logging.getLogger(__name__)
 
 _OWN = {
     "_state",
@@ -153,6 +159,9 @@ class AnalyticsService:
     def msr_reports(self) -> dict[str, tuple[Report, ...]]:
         return self._query.msr_reports()
 
+    def tracks(self) -> list[GpsFix]:
+        return self._query.tracks()
+
     def public_base(self) -> str:
         return self._query.public_base()
 
@@ -175,6 +184,33 @@ class AnalyticsService:
 
     def api_sites(self) -> list[dict[str, object]]:
         return self._query.api_sites()
+
+    def assessment_catalog(self) -> LevelCatalog:
+        return self._query.assessment_catalog()
+
+    def output_coordinates_document(self) -> dict[str, object]:
+        return self._query.output_coordinates_document()
+
+    def set_output_coordinates(self, payload: Mapping[str, object]) -> dict[str, object]:
+        """Replace the analyst override, or clear it when ``use_coord_card`` is set."""
+
+        if payload.get("use_coord_card") is True:
+            self._output_override = None
+            save_override(override_file(self.settings), None)
+            logger.info("Output coordinates reverted to the coord card")
+            return self.output_coordinates_document()
+        try:
+            spec = output_from_mapping(dict(payload))
+        except CoordinateFormatError as exc:
+            raise ValueError(str(exc)) from exc
+        self._output_override = spec
+        save_override(override_file(self.settings), spec)
+        logger.info("Output coordinates override set to %s", spec.format)
+        if spec.format == "ddmm":
+            logger.warning(
+                "Output coordinate format ddmm is not recognized as a ChatSurfer point"
+            )
+        return self.output_coordinates_document()
 
     def api_route(
         self,

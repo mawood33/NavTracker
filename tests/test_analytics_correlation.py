@@ -339,7 +339,8 @@ def test_transload_oracle_http_contract(tmp_path: Path):
     assert str(stream[1]).startswith("data: ")
     verified = route_request("POST", "/api/sites/A/verify", b"", {}, service)
     assert verified[0] == 200
-    assert verified[1]["assessment"] == "verified"
+    assert verified[1]["assessment"] == "confirmed"
+    assert verified[1]["assessed_level"] == "confirmed"
     assert verified[1]["status"] == "unknown"
     listed = route_request("GET", "/api/sites", b"", {}, service)[1]
     names = {site["id"] for site in listed["sites"]}
@@ -372,6 +373,7 @@ def test_checked_in_defaults_match_transload_oracle():
     assert production.map_provider == "none"
     assert production.routing_engine == "msr"
     assert production.http_host == "127.0.0.1"
+    assert settings.max_fixes_per_vehicle == 100
 
 
 def test_mapbox_settings_require_a_token(monkeypatch: pytest.MonkeyPatch):

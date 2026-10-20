@@ -27,6 +27,8 @@ from analytics.domain.card_schema import (
     merge_catalog as merge_schema_catalog,
 )
 from analytics.domain.coordcard import CoordCard, CoordCardError, read_coord_card
+from analytics.domain.level_assessment import LevelCatalog
+from analytics.domain.outputs import merge_level, site_fields
 from analytics.domain.publish import (
     describe_table,
 )
@@ -212,7 +214,15 @@ class CatalogService:
         if not found:
             raise KeyError(name)
         state._sites = tuple(updated)
-        return _api_site(state._named_site(name))
+        named = state._named_site(name)
+        card = state._coord_card
+        catalog = LevelCatalog(
+            state._messages,
+            state._correlations,
+            card.confidence_terms,
+            card.assessment_text,
+        )
+        return merge_level(site_fields(named), catalog.for_site(named), assessment=True)
 
     def _replace_catalog(
         self,
@@ -325,20 +335,6 @@ def _quiet_activity(as_of: datetime) -> SiteActivity:
         reports=(),
         last_activity_at=None,
     )
-
-def _api_site(site: Site) -> dict[str, object]:
-    assessment = "verified" if site.status == "confirmed" else site.status
-    return {
-        "id": site.name,
-        "name": site.name,
-        "latitude": site.latitude,
-        "longitude": site.longitude,
-        "status": site.activity_status,
-        "assessment": assessment,
-        "confidence": site.confidence,
-        "types": sorted(site.site_types),
-        "bmoa": site.moa,
-    }
 
 def _coord_card_file(path: str) -> Path | None:
     text = path.strip()

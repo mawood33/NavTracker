@@ -16,21 +16,34 @@ from analytics.domain.export import (
     kml_network_link,
 )
 from analytics.domain.grid import CellActivity
+from analytics.domain.level_assessment import LevelCatalog
 from analytics.domain.outputs import (
     conformance,
     items_document,
     landing_page,
+    merge_level,
     parse_bbox,
     parse_datetime_interval,
+    site_fields,
+    track_rows,
 )
 from analytics.domain.reference import Evidence, Msr, Site
 from analytics.domain.reports import Report
 from analytics.domain.routing import RoutingError
+from analytics.domain.tracks import GpsFix
 
 
 class HealthView(Protocol):
     def health(self) -> Mapping[str, object]:
         """Liveness payload."""
+
+
+class SettingsView(Protocol):
+    def output_coordinates_document(self) -> Mapping[str, object]:
+        """Effective published coordinate format and the analyst override."""
+
+    def set_output_coordinates(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        """Set the analyst override, or revert it with ``use_coord_card``."""
 
 
 class SiteView(Protocol):
@@ -140,6 +153,12 @@ class ExportView(Protocol):
     def cells(self) -> list[CellActivity]:
         """Hex cells with activity scores."""
 
+    def tracks(self) -> list[GpsFix]:
+        """GPS fixes still inside retention and the per-vehicle cap."""
+
+    def assessment_catalog(self) -> LevelCatalog:
+        """Reported and assessed levels for loaded messages and sites."""
+
     def msr_reports(self) -> Mapping[str, tuple[Report, ...]]:
         """Reports correlated to each MSR name."""
 
@@ -158,6 +177,7 @@ class ExportView(Protocol):
 
 class AnalyticsSnapshot(
     HealthView,
+    SettingsView,
     SiteView,
     RouteView,
     IngestView,
@@ -191,12 +211,19 @@ def route_request(
             return _error(denied, "unauthorized", "unauthorized")
     if method == "GET" and target == "/health":
         return _json(200, dict(snapshot.health()))
+    if method == "GET" and target == "/v1/settings/output-coordinates":
+        return _json(200, dict(snapshot.output_coordinates_document()))
+    if method in {"PUT", "POST"} and target == "/v1/settings/output-coordinates":
+        return _output_coordinates(body, snapshot)
     if method == "GET" and target == "/events":
         return _json(200, {"events": snapshot.events()})
     if method == "GET" and target == "/aois":
         return _json(200, {"areas": [_area(area) for area in snapshot.areas()]})
     if method == "GET" and target == "/sites":
-        return _json(200, {"sites": [_site(site) for site in snapshot.sites()]})
+        levels = snapshot.assessment_catalog()
+        return _json(200, {"sites": [_site(site, levels) for site in snapshot.sites()]})
+    if method == "GET" and target in {"/tracks", "/api/tracks"}:
+        return _json(200, {"tracks": track_rows(snapshot.tracks())})
     if method == "GET" and target == "/msrs":
         return _json(200, {"msrs": [_msr(route) for route in snapshot.routes()]})
     if method == "GET" and target == "/cells":
@@ -274,7 +301,7 @@ def route_request(
     return _json(404, {"error": "not found"})
 
 
-_COLLECTIONS = ("sites", "cells", "routes", "evidence", "itineraries")
+_COLLECTIONS = ("sites", "cells", "routes", "tracks", "evidence", "itineraries")
 
 
 def _api_routes(
@@ -302,6 +329,19 @@ def _api_routes(
     except RoutingError as exc:
         status = 400 if exc.code in {"rail_unsupported", "invalid_speed", "missing_site"} else 404
         return _error(status, str(exc), exc.code)
+
+
+def _output_coordinates(
+    body: bytes,
+    snapshot: SettingsView,
+) -> tuple[int, dict[str, object] | str, str]:
+    payload = _object(body)
+    if payload is None:
+        return _error(400, "Expected a JSON object.", "invalid_json")
+    try:
+        return _json(200, dict(snapshot.set_output_coordinates(payload)))
+    except ValueError as exc:
+        return _error(400, str(exc), "invalid_coordinates")
 
 
 def _verify_site(
@@ -483,6 +523,8 @@ def _ogc_collection(
                 snapshot.msr_reports(),
                 bbox,
                 interval,
+                snapshot.tracks() if name == "tracks" else (),
+                snapshot.assessment_catalog(),
             ),
         )
     return _json(404, {"error": "not found"})
@@ -526,25 +568,21 @@ def encode_response(
     return header.encode("ascii") + body
 
 
-def _site(site: Site) -> dict[str, object]:
-    return {
-        "name": site.name,
-        "types": sorted(site.site_types),
-        "status": site.status,
-        "confidence": site.confidence,
-        "origin": site.origin,
-        "latitude": site.latitude,
-        "longitude": site.longitude,
-        "moa": site.moa,
-        "complex": site.complex_name,
-        "mgrs": site.mgrs,
-        "polygon": [list(point) for point in site.polygon],
-        "evidence": [_evidence(item) for item in site.evidence],
-    }
+def _site(site: Site, levels: LevelCatalog | None = None) -> dict[str, object]:
+    document = site_fields(site)
+    if levels is not None:
+        merge_level(document, levels.for_site(site), assessment=True)
+    document["origin"] = site.origin
+    document["moa"] = site.moa
+    document["complex"] = site.complex_name
+    document["mgrs"] = site.mgrs
+    document["polygon"] = [list(point) for point in site.polygon]
+    document["evidence"] = [_evidence(item, levels) for item in site.evidence]
+    return document
 
 
-def _evidence(item: Evidence) -> dict[str, object]:
-    return {
+def _evidence(item: Evidence, levels: LevelCatalog | None = None) -> dict[str, object]:
+    row: dict[str, object] = {
         "kind": item.kind,
         "weight": item.weight,
         "detail": item.detail,
@@ -558,6 +596,9 @@ def _evidence(item: Evidence) -> dict[str, object]:
         "warning": item.warning,
         "linked_ids": list(item.linked_ids),
     }
+    if levels is not None:
+        merge_level(row, levels.for_evidence(item))
+    return row
 
 
 def _cell(cell: CellActivity) -> dict[str, object]:

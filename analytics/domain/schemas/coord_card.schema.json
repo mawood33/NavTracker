@@ -61,6 +61,34 @@
             "type": "object",
             "additionalProperties": true
           }
+        },
+        "output": {
+          "type": "object",
+          "description": "Published ChatSurfer LOCATION. Default format is mgrs. latlon is decimal degrees ChatSurfer maps. ddmm is accepted only when set explicitly.",
+          "additionalProperties": true,
+          "properties": {
+            "coordinate_format": {
+              "type": "string",
+              "enum": ["mgrs", "latlon", "ddmm"]
+            },
+            "mgrs_precision_m": {
+              "anyOf": [
+                {"enum": [1, 10, 100]},
+                {"enum": ["1", "10", "100"]}
+              ]
+            },
+            "mgrs_spaces": {},
+            "latlon_decimals": {},
+            "latlon_separator": {},
+            "latlon_hemisphere": {},
+            "types": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
         }
       }
     }

@@ -18,9 +18,10 @@ is 0.0. Numeric confidence scales those weights by
 ``confirmed_at``. An ``explicit_link`` row is not scaled: its weight
 is the configured explicit-correlation boost. A ``probable`` correlation label raises status to
 ``probable``. A ``truth`` row, including manual verification, forces
-``confirmed``. The TransloadOracle word ``verified`` is the external
-name for ``confirmed``. ``confirmed`` is also reachable from the
-thresholds. Site types stay a set. Decay stays off unless configured.
+``confirmed``. Exports write ``confirmed``. ``verified`` is accepted
+on input and stored as ``confirmed``. ``confirmed`` is also reachable
+from the thresholds. Site types stay a set. Decay stays off unless
+configured.
 """
 
 from collections.abc import Sequence

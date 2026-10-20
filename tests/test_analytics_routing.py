@@ -177,7 +177,9 @@ def test_snapshot_diff_reports_a_confidence_change_once():
     update = diff_documents(previous, current)
     assert update is not None
     assert update["type"] == "update"
+    assert update["schema_version"] == 2
     assert update["changes"][0]["kind"] == "site"
+    assert update["changes"][0]["op"] == "upsert"
     assert diff_documents(current, current) is None
 
 

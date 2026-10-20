@@ -211,6 +211,7 @@ def _record_message(
     assigned, attributes = _assign(fields, values)
     warnings = [block_warning] if block_warning else []
     _apply_location_tai(assigned, warnings)
+    location_text = _location_text(assigned)
     latitude, longitude, mgrs_text = _position(assigned, card, grid, warnings)
     if latitude is None or longitude is None:
         return None
@@ -278,6 +279,7 @@ def _record_message(
         correlates_to=parse_correlates(assigned.get("correlates", "")),
         events=events,
         bullseye=assigned.get("bullseye", ""),
+        location_text=location_text,
     )
 
 
@@ -330,6 +332,20 @@ def _assign(
         if token:
             attributes.append((f"extra_{index + 1}", token))
     return assigned, attributes
+
+
+def _location_text(assigned: dict[str, str]) -> str:
+    """The coordinate token as it appears in the received line."""
+
+    original = (
+        assigned.get("location", "")
+        or assigned.get("latlon", "")
+        or assigned.get("mgrs", "")
+    )
+    if not original:
+        return ""
+    body, _tail = split_location_tai(original)
+    return body or original
 
 
 def _apply_location_tai(assigned: dict[str, str], warnings: list[str]) -> None:
