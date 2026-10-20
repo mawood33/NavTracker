@@ -267,7 +267,7 @@ def test_publish_and_read_use_the_encrypted_room() -> None:
     assert report_after_missing["message"] == "report"
 
 
-def test_coord_card_and_env_rooms_use_the_encrypted_room() -> None:
+def test_coord_card_and_env_rooms_ignore_the_encryption_flag() -> None:
     card = parse_coord_card_text(CARD.read_text(encoding="utf-8"), suffix=".yaml")
     secured = _settings(
         chatsurfer_encryption_required=True,
