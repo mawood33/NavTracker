@@ -163,8 +163,7 @@ class IngestService:
 
     async def poll_chat(self) -> list[GpsFix]:
         state = self._state
-        enabled = state.settings.chat_read_enabled and state.settings.read_rooms
-        if state.chat is None or not enabled:
+        if state.chat is None or not state.settings.chat_read_enabled:
             return []
         found: list[GpsFix] = []
         for room in truth_read_rooms(state.settings):

@@ -127,7 +127,8 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
 
     crypto_handler = _crypto(settings)
     needs_chat = (
-        bool(settings.read_rooms)
+        settings.chat_read_enabled
+        or bool(settings.read_rooms)
         or settings.publish_events
         or bool(settings.tacrep_rooms)
         or bool(settings.default_ingest_rooms)

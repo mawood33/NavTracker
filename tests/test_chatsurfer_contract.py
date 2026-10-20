@@ -401,7 +401,8 @@ def test_empty_room_does_not_stop_analysis() -> None:
     http.get_result = _Response(404, {"code": 404, "message": "Room Does Not Exist"})
     service = AnalyticsService(
         _settings(
-            read_rooms=("freedom_flag",),
+            chatsurfer_room_name="freedom_flag",
+            read_rooms=(),
             chat_poll_seconds=0.01,
             analysis_interval_seconds=0.01,
             chat_ingest_mode="poll",

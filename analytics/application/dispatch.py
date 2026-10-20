@@ -14,7 +14,7 @@ from analytics.domain.publish import (
     table_from_rules_text,
 )
 from analytics.domain.rooms import lookup_rooms, resolve_rooms
-from navtracker_common.chatsurfer import select_chat_rooms
+from navtracker_common.chatsurfer import select_chat_room
 
 
 def known_types(card: CoordCard, settings: AnalyticsSettings) -> tuple[str, ...]:
@@ -111,18 +111,21 @@ def phrase_for_message(
 
 
 def truth_read_rooms(settings: AnalyticsSettings) -> tuple[str, ...]:
-    """GPS truth rooms analytics reads from ChatSurfer.
+    """The GPS room analytics reads. It is the room the worker publishes to.
 
-    The encryption flag selects ``room_name_encrypted`` for those names.
-    Coord-card and ``ANALYTICS_ROOMS_*`` rooms are not in this list.
+    The encryption flag selects ``room_name_encrypted`` or ``room_name``.
+    Coord-card rooms, ``ANALYTICS_ROOMS_*``, and ``read_rooms`` do not
+    choose this room.
     """
 
-    return select_chat_rooms(
-        settings.read_rooms,
+    room = select_chat_room(
         encryption_required=settings.chatsurfer_encryption_required,
         room_name=settings.chatsurfer_room_name,
         room_name_encrypted=settings.chatsurfer_room_name_encrypted,
     )
+    if not room:
+        return ()
+    return (room,)
 
 
 def watched_chat_rooms(card: CoordCard, settings: AnalyticsSettings) -> tuple[str, ...]:
