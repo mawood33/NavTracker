@@ -4,7 +4,7 @@ from dataclasses import fields
 
 from analytics.domain.assessment import ConfidencePolicy
 from analytics.domain.grid import GridPolicy
-from navtracker_common.settings import pick_setting
+from navtracker_common.settings import bool_setting, pick_setting
 
 
 def _mapping(value: object, name: str) -> dict[str, object]:
@@ -29,14 +29,7 @@ def _choice(name: str, value: object, allowed: set[str]) -> str:
     return text
 
 def _bool_setting(name: str, value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes"}:
-        return True
-    if text in {"0", "false", "no", ""}:
-        return False
-    raise RuntimeError(f"Invalid {name}={value!r}. Expected true or false.")
+    return bool_setting(name, value)
 
 def _positive(name: str, value: object) -> float:
     number = _non_negative(name, value)

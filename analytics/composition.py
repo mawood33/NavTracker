@@ -28,7 +28,7 @@ from analytics.infrastructure.mgrs_grid import MgrsLibrary
 from analytics.infrastructure.reference_parse import FileReferences
 from analytics.infrastructure.room_publish import ChatRoomPublisher
 from analytics.infrastructure.routing_engines import build_router
-from navtracker_common.chatsurfer import ChatSurferApiClient
+from navtracker_common.chatsurfer import ChatSurferApiClient, select_chat_rooms
 from navtracker_common.crypto import CryptoHandler
 
 
@@ -110,8 +110,14 @@ def wire_service(
         and settings.chat_read_enabled
         and settings.chat_ingest_mode == "websocket"
     ):
-        rooms = tuple(
-            dict.fromkeys((*settings.read_rooms, *ingest_room_list(state._coord_card, settings)))
+        rooms = select_chat_rooms(
+            tuple(
+                dict.fromkeys(
+                    (*settings.read_rooms, *ingest_room_list(state._coord_card, settings))
+                )
+            ),
+            encryption_required=settings.chatsurfer_encryption_required,
+            room_name_encrypted=settings.chatsurfer_room_name_encrypted,
         )
         if rooms:
             service._loop._stream = ChatStompStream(

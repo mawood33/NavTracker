@@ -225,10 +225,13 @@ def source_settings(
                     "CHAT_SURFER_ROOM_NAME",
                     str(chatsurfer.get("room_name", "")),
                 ),
-        "chatsurfer_room_name_encrypted": env_setting(
-                    "CHAT_SURFER_ROOM_NAME_ENCRYPTED",
-                    str(chatsurfer.get("room_name_encrypted", "")),
-                ),
+        "chatsurfer_room_name_encrypted": str(
+            pick_setting(
+                "CHAT_SURFER_ROOM_NAME_ENCRYPTED",
+                chatsurfer.get("room_name_encrypted"),
+                "",
+            )
+        ).strip(),
         "chatsurfer_nickname": env_setting(
                     "CHAT_SURFER_NICKNAME",
                     str(chatsurfer.get("nickname", "navtracker-analytics")),

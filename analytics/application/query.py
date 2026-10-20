@@ -40,6 +40,7 @@ from analytics.domain.reports import (
     Report,
 )
 from analytics.domain.tracks import GpsFix
+from navtracker_common.chatsurfer import select_chat_rooms
 
 
 class QueryService:
@@ -49,9 +50,13 @@ class QueryService:
     def health(self) -> dict[str, object]:
         state = self._state
         rooms: list[str] = []
-        configured = (
-            *state.settings.read_rooms,
-            *ingest_room_list(state._coord_card, state.settings),
+        configured = select_chat_rooms(
+            (
+                *state.settings.read_rooms,
+                *ingest_room_list(state._coord_card, state.settings),
+            ),
+            encryption_required=state.settings.chatsurfer_encryption_required,
+            room_name_encrypted=state.settings.chatsurfer_room_name_encrypted,
         )
         for room in configured:
             if room not in rooms:

@@ -19,6 +19,7 @@ from analytics.infrastructure.config_output import output_coord_settings
 from analytics.infrastructure.config_rooms import room_settings
 from analytics.infrastructure.config_sources import source_settings
 from analytics.infrastructure.config_values import _bool_setting, _choice, _mapping
+from navtracker_common.chatsurfer import encrypted_room_name
 from navtracker_common.crypto import require_public_material
 from navtracker_common.settings import env_setting, pick_setting
 
@@ -128,4 +129,6 @@ def load_analytics_settings(
         raise RuntimeError(
             "ANALYTICS_MAP_MIN_ZOOM must be <= ANALYTICS_MAP_MAX_ZOOM."
         )
+    if settings.chatsurfer_encryption_required:
+        encrypted_room_name(settings.chatsurfer_room_name_encrypted)
     return settings

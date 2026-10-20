@@ -37,3 +37,20 @@ def pick_setting(env_name: str, yaml_value: object, default: object) -> object:
     if yaml_value is not None:
         return yaml_value
     return default
+
+
+def bool_setting(name: str, value: object) -> bool:
+    """Read true/false.
+
+    ``1``, ``true``, and ``yes`` are true. ``0``, ``false``, ``no``, and a
+    blank value are false.
+    """
+
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes"}:
+        return True
+    if text in {"0", "false", "no", ""}:
+        return False
+    raise RuntimeError(f"Invalid {name}={value!r}. Expected true or false.")

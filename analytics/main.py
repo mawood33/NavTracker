@@ -4,6 +4,7 @@ import logging
 from analytics.composition import build_analytics, run_sources
 from analytics.infrastructure.config import load_analytics_settings
 from analytics.infrastructure.http_server import serve
+from navtracker_common.chatsurfer import select_chat_rooms
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,13 @@ def main() -> None:
         settings.environment,
         settings.clairvoyant_enabled,
         settings.clairvoyant_mode,
-        list(settings.read_rooms),
+        list(
+            select_chat_rooms(
+                settings.read_rooms,
+                encryption_required=settings.chatsurfer_encryption_required,
+                room_name_encrypted=settings.chatsurfer_room_name_encrypted,
+            )
+        ),
     )
 
     async def _run() -> None:

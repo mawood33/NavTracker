@@ -14,6 +14,7 @@ from analytics.domain.publish import (
     table_from_rules_text,
 )
 from analytics.domain.rooms import lookup_rooms, resolve_rooms
+from navtracker_common.chatsurfer import select_chat_rooms
 
 
 def known_types(card: CoordCard, settings: AnalyticsSettings) -> tuple[str, ...]:
@@ -36,13 +37,14 @@ def ingest_room_list(card: CoordCard, settings: AnalyticsSettings) -> tuple[str,
 
     names = known_types(card, settings)
     if not names:
-        return settings.default_ingest_rooms or settings.tacrep_rooms
+        found_default = settings.default_ingest_rooms or settings.tacrep_rooms
+        return _secured(found_default, settings)
     found: list[str] = []
     for name in names:
         for room in _resolved(card, settings, name, "ingest"):
             if room not in found:
                 found.append(room)
-    return tuple(found)
+    return _secured(tuple(found), settings)
 
 
 def active_publish_table(card: CoordCard, settings: AnalyticsSettings) -> PublishTable:
@@ -84,8 +86,8 @@ def destination_rooms(
     rule = first_rule(notice, table)
     chosen = rule.rooms if rule is not None else _resolved(card, settings, type_name, "publish")
     if report_room and report_room not in chosen:
-        return chosen + (report_room,)
-    return chosen
+        chosen = chosen + (report_room,)
+    return _secured(chosen, settings)
 
 
 def phrase_for_message(
@@ -106,6 +108,14 @@ def phrase_for_message(
         probable_at,
         confirmed_at,
         high_at,
+    )
+
+
+def _secured(rooms: tuple[str, ...], settings: AnalyticsSettings) -> tuple[str, ...]:
+    return select_chat_rooms(
+        rooms,
+        encryption_required=settings.chatsurfer_encryption_required,
+        room_name_encrypted=settings.chatsurfer_room_name_encrypted,
     )
 
 

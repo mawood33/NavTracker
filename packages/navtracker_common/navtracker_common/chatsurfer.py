@@ -26,6 +26,57 @@ ROOM_SEARCH_PATH = "/api/roomsearch/rooms/search"
 PUBLISH_PATH = "/api/chatserver/message"
 
 
+def encrypted_room_name(room_name_encrypted: str) -> str:
+    """The encrypted room, or an error. The plain room is not a substitute."""
+
+    name = room_name_encrypted.strip()
+    if name:
+        return name
+    raise RuntimeError(
+        "CHAT_SURFER_ENCRYPTION_REQUIRED is true but "
+        "CHAT_SURFER_ROOM_NAME_ENCRYPTED is unset. "
+        "Refusing the unencrypted CHAT_SURFER_ROOM_NAME."
+    )
+
+
+def select_chat_room(
+    *,
+    encryption_required: bool,
+    room_name: str,
+    room_name_encrypted: str,
+    requested: str | None = None,
+) -> str:
+    """Choose the ChatSurfer room for one publish or read.
+
+    Encryption uses ``room_name_encrypted`` for every caller, including a
+    coord-card or env room passed in ``requested``. A missing encrypted
+    room raises. Encryption off uses the requested room, then ``room_name``.
+    """
+
+    if encryption_required:
+        return encrypted_room_name(room_name_encrypted)
+    chosen = requested if requested is not None and requested.strip() else room_name
+    text = chosen.strip()
+    if text:
+        return text
+    raise RuntimeError("CHAT_SURFER_ROOM_NAME is unset.")
+
+
+def select_chat_rooms(
+    rooms: tuple[str, ...] | list[str],
+    *,
+    encryption_required: bool,
+    room_name_encrypted: str,
+) -> tuple[str, ...]:
+    """Map a room list. Encryption collapses it to the one encrypted room."""
+
+    if not encryption_required:
+        return tuple(rooms)
+    if not rooms:
+        return ()
+    return (encrypted_room_name(room_name_encrypted),)
+
+
 class ChatReadError(Exception):
     """A ChatSurfer room could not be read. Not a publish failure."""
 
@@ -142,6 +193,16 @@ class ChatSurferApiClient:
             return None
         return (client_cert, client_key)
 
+    def active_room(self, requested: str | None = None) -> str:
+        """The room this client will actually read or publish."""
+
+        return select_chat_room(
+            encryption_required=self.encryption_required,
+            room_name=self.room_name,
+            room_name_encrypted=self.room_name_encrypted,
+            requested=requested,
+        )
+
     async def close(self) -> None:
         await self.client.aclose()
 
@@ -194,21 +255,21 @@ class ChatSurferApiClient:
         message: str,
         room_name: str | None = None,
     ) -> dict[str, Any]:
-        selected = room_name or self.room_name
+        try:
+            selected = self.active_room(room_name)
+        except RuntimeError as exc:
+            raise PublicationError(str(exc)) from exc
         if self.encryption_required:
             if self.crypto_handler is None:
                 raise PublicationError(
                     "Encryption is required but CryptoHandler is unavailable"
                 )
-
             message = self.crypto_handler.encrypt(message)
-            if room_name is None:
-                selected = self.room_name_encrypted
 
         message = self._fit_message_limit(message)
         logger.debug(
             "Publish to ChatSurfer: room-%s, nickname-%s, encryption-%s",
-            self.room_name,
+            selected,
             self.nickname,
             self.encryption_required,
         )
@@ -244,6 +305,10 @@ class ChatSurferApiClient:
 
         spec = self.read_spec
         page_size = _page_size(limit or spec.num_after, 1000)
+        try:
+            room_name = self.active_room(room_name)
+        except RuntimeError as exc:
+            raise ChatReadError(str(exc), kind="unavailable") from exc
         if since:
             path = spec.page_path.format(messageId=quote(since, safe=""))
             response = await self._send(
@@ -285,6 +350,10 @@ class ChatSurferApiClient:
         """One page of ``POST /api/chatsearch/messages/search``."""
 
         page = _page_size(limit, 1000)
+        try:
+            room_name = self.active_room(room_name)
+        except RuntimeError as exc:
+            raise ChatReadError(str(exc), path=SEARCH_PATH, kind="unavailable") from exc
         window = time_filter or {
             "startDateTime": _iso(start),
             "endDateTime": _iso(end),
@@ -357,7 +426,16 @@ class ChatSurferApiClient:
                 exc.kind,
                 DOMAINS_PATH,
             )
+        checked: list[str] = []
         for room in rooms:
+            try:
+                selected = self.active_room(room)
+            except RuntimeError as exc:
+                logger.warning("%s", exc)
+                return
+            if selected not in checked:
+                checked.append(selected)
+        for room in checked:
             try:
                 response = await self._send(
                     "post",
