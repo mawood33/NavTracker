@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from analytics.application.dispatch import truth_read_rooms
 from analytics.composition import build_analytics, run_sources
 from analytics.infrastructure.config import load_analytics_settings
 from analytics.infrastructure.http_server import serve
@@ -18,7 +19,7 @@ def main() -> None:
         settings.environment,
         settings.clairvoyant_enabled,
         settings.clairvoyant_mode,
-        list(settings.read_rooms),
+        list(truth_read_rooms(settings)),
     )
 
     async def _run() -> None:

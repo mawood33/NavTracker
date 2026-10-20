@@ -14,6 +14,7 @@ from analytics.domain.publish import (
     table_from_rules_text,
 )
 from analytics.domain.rooms import lookup_rooms, resolve_rooms
+from navtracker_common.chatsurfer import select_chat_room
 
 
 def known_types(card: CoordCard, settings: AnalyticsSettings) -> tuple[str, ...]:
@@ -84,7 +85,7 @@ def destination_rooms(
     rule = first_rule(notice, table)
     chosen = rule.rooms if rule is not None else _resolved(card, settings, type_name, "publish")
     if report_room and report_room not in chosen:
-        return chosen + (report_room,)
+        chosen = chosen + (report_room,)
     return chosen
 
 
@@ -107,6 +108,34 @@ def phrase_for_message(
         confirmed_at,
         high_at,
     )
+
+
+def truth_read_rooms(settings: AnalyticsSettings) -> tuple[str, ...]:
+    """The GPS room analytics reads. It is the room the worker publishes to.
+
+    The encryption flag selects ``room_name_encrypted`` or ``room_name``.
+    Coord-card rooms, ``ANALYTICS_ROOMS_*``, and ``read_rooms`` do not
+    choose this room.
+    """
+
+    room = select_chat_room(
+        encryption_required=settings.chatsurfer_encryption_required,
+        room_name=settings.chatsurfer_room_name,
+        room_name_encrypted=settings.chatsurfer_room_name_encrypted,
+    )
+    if not room:
+        return ()
+    return (room,)
+
+
+def watched_chat_rooms(card: CoordCard, settings: AnalyticsSettings) -> tuple[str, ...]:
+    """Truth reads plus report rooms. Report rooms keep the names the card or env set."""
+
+    found: list[str] = []
+    for room in (*truth_read_rooms(settings), *ingest_room_list(card, settings)):
+        if room and room not in found:
+            found.append(room)
+    return tuple(found)
 
 
 def _resolved(

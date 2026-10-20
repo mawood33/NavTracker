@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from analytics.application.dispatch import (
     ingest_room_list,
+    truth_read_rooms,
 )
 from analytics.application.hub import OutputHub
 from analytics.application.room_memory import RoomMemory, note_message
@@ -162,11 +163,10 @@ class IngestService:
 
     async def poll_chat(self) -> list[GpsFix]:
         state = self._state
-        enabled = state.settings.chat_read_enabled and state.settings.read_rooms
-        if state.chat is None or not enabled:
+        if state.chat is None or not state.settings.chat_read_enabled:
             return []
         found: list[GpsFix] = []
-        for room in state.settings.read_rooms:
+        for room in truth_read_rooms(state.settings):
             fixes, _reports = await self._pull_room(room, state._cursors)
             found.extend(fixes)
         return found

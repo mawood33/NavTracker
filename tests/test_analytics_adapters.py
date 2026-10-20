@@ -316,7 +316,7 @@ def test_chat_reader_decrypts_a_fernet_room_message():
         assert messages[0].body == plain
         assert messages[0].message_id == "m1"
         assert messages[0].nickname == "navtracker"
-        assert http.calls[0][0].endswith("/api/chat/messages/domain/freedom_flag")
+        assert http.calls[0][0].endswith("/api/chat/messages/domain/freedom_flag_encrypted")
         assert http.calls[0][1] is None
         await client.close()
 

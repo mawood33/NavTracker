@@ -7,7 +7,7 @@ from analytics.application.coordinates import (
     describe_resolution,
     env_coordinates,
 )
-from analytics.application.dispatch import ingest_room_list
+from analytics.application.dispatch import watched_chat_rooms
 from analytics.application.events import event_document
 from analytics.application.state import AnalyticsState
 from analytics.domain.aoi import AreaOfInterest
@@ -49,10 +49,7 @@ class QueryService:
     def health(self) -> dict[str, object]:
         state = self._state
         rooms: list[str] = []
-        configured = (
-            *state.settings.read_rooms,
-            *ingest_room_list(state._coord_card, state.settings),
-        )
+        configured = watched_chat_rooms(state._coord_card, state.settings)
         for room in configured:
             if room not in rooms:
                 rooms.append(room)

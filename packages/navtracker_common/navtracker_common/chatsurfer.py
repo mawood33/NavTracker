@@ -26,6 +26,82 @@ ROOM_SEARCH_PATH = "/api/roomsearch/rooms/search"
 PUBLISH_PATH = "/api/chatserver/message"
 
 
+def encrypted_room_name(room_name_encrypted: str) -> str:
+    """The encrypted GPS truth room, or an error. The plain room is not a substitute."""
+
+    name = room_name_encrypted.strip()
+    if name:
+        return name
+    raise RuntimeError(
+        "CHAT_SURFER_ENCRYPTION_REQUIRED is true but "
+        "CHAT_SURFER_ROOM_NAME_ENCRYPTED is unset. "
+        "Refusing the unencrypted CHAT_SURFER_ROOM_NAME."
+    )
+
+
+def _truth_room_alias(name: str, room_name: str, room_name_encrypted: str) -> bool:
+    text = name.strip()
+    if not text:
+        return False
+    if text == room_name.strip():
+        return True
+    encrypted = room_name_encrypted.strip()
+    return encrypted != "" and text == encrypted
+
+
+def select_chat_room(
+    *,
+    encryption_required: bool,
+    room_name: str,
+    room_name_encrypted: str,
+    requested: str | None = None,
+) -> str:
+    """Choose the ChatSurfer room for one publish or read.
+
+    ``room_name`` and ``room_name_encrypted`` are the GPS truth rooms.
+    Encryption required selects the encrypted name for that room only, and
+    a missing encrypted name raises. A requested room that is not one of
+    those two names, such as a coord-card or ``ANALYTICS_ROOMS_*`` room,
+    is returned unchanged and does not require the encrypted name.
+    """
+
+    requested_text = "" if requested is None else requested.strip()
+    if requested_text and not _truth_room_alias(
+        requested_text,
+        room_name,
+        room_name_encrypted,
+    ):
+        return requested_text
+    if encryption_required:
+        return encrypted_room_name(room_name_encrypted)
+    text = room_name.strip()
+    if text:
+        return text
+    raise RuntimeError("CHAT_SURFER_ROOM_NAME is unset.")
+
+
+def select_chat_rooms(
+    rooms: tuple[str, ...] | list[str],
+    *,
+    encryption_required: bool,
+    room_name: str,
+    room_name_encrypted: str,
+) -> tuple[str, ...]:
+    """Map GPS truth-room names. Other rooms stay as given. An empty list stays empty."""
+
+    chosen: list[str] = []
+    for room in rooms:
+        selected = select_chat_room(
+            encryption_required=encryption_required,
+            room_name=room_name,
+            room_name_encrypted=room_name_encrypted,
+            requested=room,
+        )
+        if selected not in chosen:
+            chosen.append(selected)
+    return tuple(chosen)
+
+
 class ChatReadError(Exception):
     """A ChatSurfer room could not be read. Not a publish failure."""
 
@@ -142,6 +218,16 @@ class ChatSurferApiClient:
             return None
         return (client_cert, client_key)
 
+    def active_room(self, requested: str | None = None) -> str:
+        """The room this client will actually read or publish."""
+
+        return select_chat_room(
+            encryption_required=self.encryption_required,
+            room_name=self.room_name,
+            room_name_encrypted=self.room_name_encrypted,
+            requested=requested,
+        )
+
     async def close(self) -> None:
         await self.client.aclose()
 
@@ -166,8 +252,9 @@ class ChatSurferApiClient:
     ) -> dict[str, Any]:
         """Publish an already-serialized document.
 
-        ``room_name`` selects a room other than the configured default.
-        The body is still encrypted when encryption is required.
+        Omitting ``room_name`` uses the GPS truth room. That publish is
+        encrypted when encryption is required. An explicit room that is
+        not a truth-room name is sent as given, in plaintext.
         """
 
         try:
@@ -194,23 +281,24 @@ class ChatSurferApiClient:
         message: str,
         room_name: str | None = None,
     ) -> dict[str, Any]:
-        selected = room_name or self.room_name
-        if self.encryption_required:
+        try:
+            selected = self.active_room(room_name)
+        except RuntimeError as exc:
+            raise PublicationError(str(exc)) from exc
+        encrypt = self._uses_truth_crypto(selected)
+        if encrypt:
             if self.crypto_handler is None:
                 raise PublicationError(
                     "Encryption is required but CryptoHandler is unavailable"
                 )
-
             message = self.crypto_handler.encrypt(message)
-            if room_name is None:
-                selected = self.room_name_encrypted
 
         message = self._fit_message_limit(message)
         logger.debug(
             "Publish to ChatSurfer: room-%s, nickname-%s, encryption-%s",
-            self.room_name,
+            selected,
             self.nickname,
-            self.encryption_required,
+            encrypt,
         )
 
         payload: dict[str, object] = {
@@ -244,6 +332,10 @@ class ChatSurferApiClient:
 
         spec = self.read_spec
         page_size = _page_size(limit or spec.num_after, 1000)
+        try:
+            room_name = self.active_room(room_name)
+        except RuntimeError as exc:
+            raise ChatReadError(str(exc), kind="unavailable") from exc
         if since:
             path = spec.page_path.format(messageId=quote(since, safe=""))
             response = await self._send(
@@ -285,6 +377,10 @@ class ChatSurferApiClient:
         """One page of ``POST /api/chatsearch/messages/search``."""
 
         page = _page_size(limit, 1000)
+        try:
+            room_name = self.active_room(room_name)
+        except RuntimeError as exc:
+            raise ChatReadError(str(exc), path=SEARCH_PATH, kind="unavailable") from exc
         window = time_filter or {
             "startDateTime": _iso(start),
             "endDateTime": _iso(end),
@@ -357,7 +453,16 @@ class ChatSurferApiClient:
                 exc.kind,
                 DOMAINS_PATH,
             )
+        checked: list[str] = []
         for room in rooms:
+            try:
+                selected = self.active_room(room)
+            except RuntimeError as exc:
+                logger.warning("%s", exc)
+                return
+            if selected not in checked:
+                checked.append(selected)
+        for room in checked:
             try:
                 response = await self._send(
                     "post",
@@ -487,9 +592,13 @@ class ChatSurferApiClient:
         raw_body = _first(item, spec.body_field, "text", "message")
         if not isinstance(raw_body, str):
             raw_body = json.dumps(raw_body, separators=(",", ":"))
-        body = self._maybe_decrypt(raw_body)
         message_id = str(_first(item, spec.id_field, "id") or "")
         room = _first(item, spec.room_field, "roomName")
+        room_text = room if isinstance(room, str) and room else fallback_room
+        if self._uses_truth_crypto(room_text) or self._uses_truth_crypto(fallback_room):
+            body = self._maybe_decrypt(raw_body)
+        else:
+            body = raw_body
         sender = _first(item, spec.nickname_field, "sender", "nickname")
         stamp = _parse_timestamp(_first(item, spec.timestamp_field, "timestamp"))
         classification = item.get("classification", "")
@@ -507,6 +616,15 @@ class ChatSurferApiClient:
             revision_id=str(revision) if revision else message_id,
             is_edited=edited is True,
             geo_points=_geo_points(item.get("geoTags")),
+        )
+
+    def _uses_truth_crypto(self, room: str) -> bool:
+        """Encryption applies only to the GPS truth room, not coord-card rooms."""
+
+        return self.encryption_required and _truth_room_alias(
+            room,
+            self.room_name,
+            self.room_name_encrypted,
         )
 
     def _maybe_decrypt(self, body: str) -> str:

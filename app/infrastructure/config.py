@@ -20,6 +20,10 @@ from app.application.mode import (
     resolve_navixy_mode,
 )
 from app.infrastructure.crypto import fernet_key_for_mode, require_public_material
+from navtracker_common.chatsurfer import encrypted_room_name
+from navtracker_common.settings import (
+    bool_setting as _bool_setting,
+)
 from navtracker_common.settings import (
     env_setting as _env,
 )
@@ -134,7 +138,7 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
     require_public_material(crypto_mode, encryption_cert)
     fernet_key = _fernet_key(crypto, crypto_mode)
 
-    return Settings(
+    settings = Settings(
         environment=environment,
         navixy_base_url=_env(
             "NAVIXY_BASE_URL",
@@ -163,14 +167,20 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
             "CHAT_SURFER_DOMAIN_ID",
             chatsurfer.get("domain_id"),
         ),
-        chatsurfer_room_name=_env(
-            "CHAT_SURFER_ROOM_NAME",
-            chatsurfer.get("room_name"),
-        ),
-        chatsurfer_room_name_encrypted=_env(
-            "CHAT_SURFER_ROOM_NAME_ENCRYPTED",
-            chatsurfer.get("room_name_encrypted"),
-        ),
+        chatsurfer_room_name=str(
+            _pick(
+                "CHAT_SURFER_ROOM_NAME",
+                chatsurfer.get("room_name"),
+                "",
+            )
+        ).strip(),
+        chatsurfer_room_name_encrypted=str(
+            _pick(
+                "CHAT_SURFER_ROOM_NAME_ENCRYPTED",
+                chatsurfer.get("room_name_encrypted"),
+                "",
+            )
+        ).strip(),
         chatsurfer_nickname=_env(
             "CHAT_SURFER_NICKNAME",
             chatsurfer.get("nickname", "navtracker"),
@@ -214,12 +224,13 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
                 str(chatsurfer.get("max_message_size", 4000)),
             ),
         ),
-        chatsurfer_encryption_required=(
-            _env(
+        chatsurfer_encryption_required=_bool_setting(
+            "CHAT_SURFER_ENCRYPTION_REQUIRED",
+            _pick(
                 "CHAT_SURFER_ENCRYPTION_REQUIRED",
-                str(chatsurfer.get("encryption_required", False)),
-            ).lower()
-            == "true"
+                chatsurfer.get("encryption_required"),
+                False,
+            ),
         ),
         encryption_cert=encryption_cert,
         encryption_key=_env(
@@ -237,6 +248,9 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
             )
         ),
     )
+    if settings.chatsurfer_encryption_required:
+        encrypted_room_name(settings.chatsurfer_room_name_encrypted)
+    return settings
 
 
 _CRYPTO_MODES = {"pem", "ssh", "fernet"}

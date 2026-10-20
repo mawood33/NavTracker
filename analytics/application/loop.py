@@ -100,16 +100,9 @@ class AnalysisLoop:
         client = self._state.chat
         if client is None or not hasattr(client, "warn_catalog"):
             return
-        from analytics.application.dispatch import ingest_room_list
+        from analytics.application.dispatch import watched_chat_rooms
 
-        rooms = tuple(
-            dict.fromkeys(
-                (
-                    *self._state.settings.read_rooms,
-                    *ingest_room_list(self._state._coord_card, self._state.settings),
-                )
-            )
-        )
+        rooms = watched_chat_rooms(self._state._coord_card, self._state.settings)
         try:
             await client.warn_catalog(rooms)
         except Exception:
