@@ -37,14 +37,13 @@ def ingest_room_list(card: CoordCard, settings: AnalyticsSettings) -> tuple[str,
 
     names = known_types(card, settings)
     if not names:
-        found_default = settings.default_ingest_rooms or settings.tacrep_rooms
-        return _secured(found_default, settings)
+        return settings.default_ingest_rooms or settings.tacrep_rooms
     found: list[str] = []
     for name in names:
         for room in _resolved(card, settings, name, "ingest"):
             if room not in found:
                 found.append(room)
-    return _secured(tuple(found), settings)
+    return tuple(found)
 
 
 def active_publish_table(card: CoordCard, settings: AnalyticsSettings) -> PublishTable:
@@ -87,7 +86,7 @@ def destination_rooms(
     chosen = rule.rooms if rule is not None else _resolved(card, settings, type_name, "publish")
     if report_room and report_room not in chosen:
         chosen = chosen + (report_room,)
-    return _secured(chosen, settings)
+    return chosen
 
 
 def phrase_for_message(
@@ -111,12 +110,29 @@ def phrase_for_message(
     )
 
 
-def _secured(rooms: tuple[str, ...], settings: AnalyticsSettings) -> tuple[str, ...]:
+def truth_read_rooms(settings: AnalyticsSettings) -> tuple[str, ...]:
+    """GPS truth rooms analytics reads from ChatSurfer.
+
+    The encryption flag selects ``room_name_encrypted`` for those names.
+    Coord-card and ``ANALYTICS_ROOMS_*`` rooms are not in this list.
+    """
+
     return select_chat_rooms(
-        rooms,
+        settings.read_rooms,
         encryption_required=settings.chatsurfer_encryption_required,
+        room_name=settings.chatsurfer_room_name,
         room_name_encrypted=settings.chatsurfer_room_name_encrypted,
     )
+
+
+def watched_chat_rooms(card: CoordCard, settings: AnalyticsSettings) -> tuple[str, ...]:
+    """Truth reads plus report rooms. Report rooms keep the names the card or env set."""
+
+    found: list[str] = []
+    for room in (*truth_read_rooms(settings), *ingest_room_list(card, settings)):
+        if room and room not in found:
+            found.append(room)
+    return tuple(found)
 
 
 def _resolved(

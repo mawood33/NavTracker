@@ -11,7 +11,7 @@ from analytics.application.ingest import IngestService
 from analytics.application.ports import ChatEventStream
 from analytics.application.publishing import PublishService
 from analytics.application.state import AnalyticsState
-from navtracker_common.chatsurfer import ChatReadError, ChatRoomMessage, select_chat_rooms
+from navtracker_common.chatsurfer import ChatReadError, ChatRoomMessage
 
 logger = logging.getLogger(__name__)
 
@@ -100,20 +100,9 @@ class AnalysisLoop:
         client = self._state.chat
         if client is None or not hasattr(client, "warn_catalog"):
             return
-        from analytics.application.dispatch import ingest_room_list
+        from analytics.application.dispatch import watched_chat_rooms
 
-        rooms = select_chat_rooms(
-            tuple(
-                dict.fromkeys(
-                    (
-                        *self._state.settings.read_rooms,
-                        *ingest_room_list(self._state._coord_card, self._state.settings),
-                    )
-                )
-            ),
-            encryption_required=self._state.settings.chatsurfer_encryption_required,
-            room_name_encrypted=self._state.settings.chatsurfer_room_name_encrypted,
-        )
+        rooms = watched_chat_rooms(self._state._coord_card, self._state.settings)
         try:
             await client.warn_catalog(rooms)
         except Exception:

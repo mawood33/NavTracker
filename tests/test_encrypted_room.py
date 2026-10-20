@@ -1,4 +1,4 @@
-"""Encryption required uses room_name_encrypted for every ChatSurfer room."""
+"""Encryption required switches only the GPS truth room."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -11,7 +11,12 @@ from tests.test_analytics_reports import _settings
 from tests.test_chatsurfer_contract import _Http, _Response
 from tests.test_settings import _scrub
 
-from analytics.application.dispatch import destination_rooms, ingest_room_list
+from analytics.application.dispatch import (
+    destination_rooms,
+    ingest_room_list,
+    truth_read_rooms,
+    watched_chat_rooms,
+)
 from analytics.domain.coordcard import CoordCard, parse_coord_card_text
 from analytics.domain.publish import PublishTable
 from analytics.infrastructure.config import load_analytics_settings
@@ -162,9 +167,11 @@ def test_each_crypto_mode_keeps_the_encrypted_room(
     client = _client(http, encryption_required=True)
     try:
         assert client.active_room() == ENCRYPTED
-        assert client.active_room("room-tacrep-publish") == ENCRYPTED
-        assert client.active_room("room-adhoc-ingest") == ENCRYPTED
-        assert client.active_room("room-sitrep-publish") == ENCRYPTED
+        assert client.active_room(PLAIN) == ENCRYPTED
+        assert client.active_room(ENCRYPTED) == ENCRYPTED
+        assert client.active_room("room-tacrep-publish") == "room-tacrep-publish"
+        assert client.active_room("room-adhoc-ingest") == "room-adhoc-ingest"
+        assert client.active_room("room-sitrep-publish") == "room-sitrep-publish"
     finally:
         asyncio.run(client.close())
 
@@ -187,6 +194,23 @@ def test_publish_and_read_use_the_encrypted_room() -> None:
         )
         await client.publish_text("SITREP line", room_name="room-sitrep-publish")
         await client.read_room(PLAIN)
+        ciphertext = handler.encrypt("card-secret")
+        http.get_result = _Response(
+            200,
+            {
+                "messages": [
+                    {
+                        "id": "c1",
+                        "roomName": "room-sitrep-ingest",
+                        "text": ciphertext,
+                        "sender": "spotter",
+                        "timestamp": "2026-01-01T00:00:01+00:00",
+                    }
+                ]
+            },
+        )
+        card_messages = await client.read_room("room-sitrep-ingest")
+        assert card_messages[0].body == ciphertext
         moment = datetime(2026, 1, 1, tzinfo=UTC)
         page = await client.search_messages(
             room_name="room-adhoc-ingest",
@@ -197,14 +221,23 @@ def test_publish_and_read_use_the_encrypted_room() -> None:
         await client.close()
 
     asyncio.run(scenario())
-    assert _publish_body(http, 0)["roomName"] == ENCRYPTED
-    assert _publish_body(http, 1)["roomName"] == ENCRYPTED
+    truth = _publish_body(http, 0)
+    report = _publish_body(http, 1)
+    assert truth["roomName"] == ENCRYPTED
+    assert truth["message"] != "SITREP line"
+    assert isinstance(truth["message"], str)
+    assert "algorithm" in truth["message"]
+    assert report["roomName"] == "room-sitrep-publish"
+    assert report["message"] == "SITREP line"
     read_url = http.calls[2][1]
     assert isinstance(read_url, str)
     assert read_url.endswith(f"/api/chat/messages/domain/{ENCRYPTED}")
-    search = http.calls[3][2]
+    report_read = http.calls[3][1]
+    assert isinstance(report_read, str)
+    assert report_read.endswith("/api/chat/messages/domain/room-sitrep-ingest")
+    search = http.calls[4][2]
     assert isinstance(search, dict)
-    assert search["roomFilter"] == {"domain": {"properties": [ENCRYPTED]}}
+    assert search["roomFilter"] == {"domain": {"properties": ["room-adhoc-ingest"]}}
 
     plain_http = _Http()
     plain_http.post_result = _Response(204, None)
@@ -220,10 +253,14 @@ def test_publish_and_read_use_the_encrypted_room() -> None:
     async def missing() -> None:
         client = _client(http, encryption_required=True, encrypted="", handler=handler)
         with pytest.raises(PublicationError, match="CHAT_SURFER_ROOM_NAME_ENCRYPTED"):
-            await client.publish_text("nope", room_name=PLAIN)
+            await client.publish_text("nope")
+        await client.publish_text("report", room_name="room-sitrep-publish")
         await client.close()
 
     asyncio.run(missing())
+    report_after_missing = _publish_body(http, len(http.calls) - 1)
+    assert report_after_missing["roomName"] == "room-sitrep-publish"
+    assert report_after_missing["message"] == "report"
 
 
 def test_coord_card_and_env_rooms_use_the_encrypted_room() -> None:
@@ -253,7 +290,7 @@ def test_coord_card_and_env_rooms_use_the_encrypted_room() -> None:
             card=card,
             settings=secured,
             table=table,
-        ) == (ENCRYPTED,)
+        ) == (plain_room,)
         assert destination_rooms(
             name,
             confidence="POSS LOW",
@@ -264,8 +301,22 @@ def test_coord_card_and_env_rooms_use_the_encrypted_room() -> None:
             settings=plain,
             table=table,
         ) == (plain_room,)
-    assert ingest_room_list(card, secured) == (ENCRYPTED,)
-    assert "room-sitrep-ingest" in ingest_room_list(card, plain)
+    secured_ingest = ingest_room_list(card, secured)
+    plain_ingest = ingest_room_list(card, plain)
+    assert secured_ingest == plain_ingest
+    assert "room-sitrep-ingest" in secured_ingest
+    assert ENCRYPTED not in secured_ingest
+    truth_settings = _settings(
+        chatsurfer_encryption_required=True,
+        chatsurfer_room_name=PLAIN,
+        chatsurfer_room_name_encrypted=ENCRYPTED,
+        read_rooms=(PLAIN,),
+    )
+    assert truth_read_rooms(truth_settings) == (ENCRYPTED,)
+    watched = watched_chat_rooms(card, truth_settings)
+    assert watched[0] == ENCRYPTED
+    assert "room-sitrep-ingest" in watched
+    assert PLAIN not in watched
 
     env_settings = _settings(
         chatsurfer_encryption_required=True,
@@ -282,7 +333,12 @@ def test_coord_card_and_env_rooms_use_the_encrypted_room() -> None:
         ),
     )
     empty = CoordCard()
-    for name in ("SITREP", "ADHOC", "TACREP"):
+    expected_publish = {
+        "SITREP": ("env-sitrep",),
+        "ADHOC": ("env-adhoc",),
+        "TACREP": ("env-tacrep",),
+    }
+    for name, rooms in expected_publish.items():
         assert destination_rooms(
             name,
             confidence="PROB",
@@ -292,19 +348,31 @@ def test_coord_card_and_env_rooms_use_the_encrypted_room() -> None:
             card=empty,
             settings=env_settings,
             table=table,
-        ) == (ENCRYPTED,)
-    assert ingest_room_list(empty, env_settings) == (ENCRYPTED,)
+        ) == rooms
+    env_ingest = ingest_room_list(empty, env_settings)
+    assert "env-sitrep-in" in env_ingest
+    assert "env-adhoc-in" in env_ingest
+    assert "env-tacrep-in" in env_ingest
+    assert ENCRYPTED not in env_ingest
+    assert destination_rooms(
+        "SITREP",
+        confidence="POSS LOW",
+        cat=4,
+        sources=(),
+        report_room="",
+        card=card,
+        settings=_settings(
+            chatsurfer_encryption_required=True,
+            chatsurfer_room_name_encrypted="",
+        ),
+        table=table,
+    ) == ("room-sitrep-publish",)
     with pytest.raises(RuntimeError, match="CHAT_SURFER_ROOM_NAME_ENCRYPTED"):
-        destination_rooms(
-            "SITREP",
-            confidence="POSS LOW",
-            cat=4,
-            sources=(),
-            report_room="",
-            card=card,
-            settings=_settings(
+        truth_read_rooms(
+            _settings(
                 chatsurfer_encryption_required=True,
+                chatsurfer_room_name=PLAIN,
                 chatsurfer_room_name_encrypted="",
-            ),
-            table=table,
+                read_rooms=(PLAIN,),
+            )
         )

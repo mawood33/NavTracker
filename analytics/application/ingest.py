@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from analytics.application.dispatch import (
     ingest_room_list,
+    truth_read_rooms,
 )
 from analytics.application.hub import OutputHub
 from analytics.application.room_memory import RoomMemory, note_message
@@ -39,12 +40,7 @@ from analytics.domain.tacrep_parse import parse_exercise_text
 from analytics.domain.templates import Tasking, link_responses
 from analytics.domain.timeutil import ensure_utc, valid_position
 from analytics.domain.tracks import GpsFix, fix_from_mapping
-from navtracker_common.chatsurfer import (
-    ChatReadError,
-    ChatRoomMessage,
-    backfill_window,
-    select_chat_rooms,
-)
+from navtracker_common.chatsurfer import ChatReadError, ChatRoomMessage, backfill_window
 
 logger = logging.getLogger(__name__)
 
@@ -171,11 +167,7 @@ class IngestService:
         if state.chat is None or not enabled:
             return []
         found: list[GpsFix] = []
-        for room in select_chat_rooms(
-            state.settings.read_rooms,
-            encryption_required=state.settings.chatsurfer_encryption_required,
-            room_name_encrypted=state.settings.chatsurfer_room_name_encrypted,
-        ):
+        for room in truth_read_rooms(state.settings):
             fixes, _reports = await self._pull_room(room, state._cursors)
             found.extend(fixes)
         return found
