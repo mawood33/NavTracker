@@ -158,6 +158,37 @@ def test_newer_fix_replaces_pending_retry():
     asyncio.run(scenario())
 
 
+def test_naive_and_aware_timestamps_compare_without_error():
+    async def scenario():
+        publisher = Publisher(fail_times=10)
+        abandoned = []
+
+        async def on_success(position):
+            raise AssertionError(position)
+
+        async def on_abandon(position):
+            abandoned.append(position.timestamp)
+
+        outbox = LatestFixRetry(
+            publisher,
+            Clock(),
+            on_success,
+            on_abandon,
+            max_attempts=3,
+            backoff_initial=0,
+            backoff_cap=0,
+        )
+        await outbox.submit(_position(datetime(2026, 1, 1)))
+        await outbox.submit(_position(datetime(2025, 6, 1, tzinfo=UTC)))
+        await outbox.submit(_position(datetime(2026, 6, 1)))
+        assert abandoned[0] == datetime(2025, 6, 1, tzinfo=UTC)
+        assert abandoned[1] == datetime(2026, 1, 1, tzinfo=UTC)
+        pending = outbox._pending[4].position.timestamp
+        assert pending == datetime(2026, 6, 1, tzinfo=UTC)
+
+    asyncio.run(scenario())
+
+
 def test_chatsurfer_http_error_is_a_publication_error():
     response = httpx.Response(503, json={"ok": False})
     try:

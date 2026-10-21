@@ -11,6 +11,8 @@ reads both, with the poll shape winning when both are present:
 - ``connection_status`` and ``movement_status`` from the state object
 
 A missing timestamp stays missing. It is not replaced with the clock.
+A value with no offset is UTC. Aware values are converted to UTC. The
+poll and websocket parsers share this rule.
 """
 
 from datetime import datetime
@@ -18,6 +20,7 @@ from typing import Any
 
 from app.domain.entities import TrackerPosition
 from app.domain.errors import TrackerDiscoveryError
+from navtracker_common.timeutil import ensure_utc
 
 
 def parse_poll_response(payload: Any, tracker_id: int) -> TrackerPosition:
@@ -173,9 +176,10 @@ def _timestamp(value: object) -> datetime | None:
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
+    return ensure_utc(parsed)
 
 
 def parse_tracker_list(payload: object) -> list[int]:

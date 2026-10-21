@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from app.application.mode import FailoverPolicy, IngestionMode
 from app.application.supervisor import IngestionSupervisor
@@ -482,6 +482,66 @@ def test_dedupes_tracker_id_and_timestamp_across_failover(caplog):
         await _shutdown(task)
 
     asyncio.run(scenario())
+
+
+def test_mixed_naive_and_aware_timestamps_dedupe_across_failover():
+    naive = datetime(2026, 1, 1)
+    aware = datetime(2026, 1, 1, tzinfo=UTC)
+    later = datetime(2026, 1, 1, 2, 5, tzinfo=timezone(timedelta(hours=2)))
+    expected_later = datetime(2026, 1, 1, 0, 5, tzinfo=UTC)
+
+    async def scenario():
+        clock = FakeClock()
+        reader = QueueReader()
+        stream = ScriptedStream(
+            [
+                ScriptedSession(
+                    [_position(4, naive), SourceConnectionError("drop")]
+                ),
+                ScriptedSession([]),
+            ]
+        )
+        publisher = FakePublisher()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[4],
+            policy=_policy(max_attempts=1, probe_interval_seconds=0),
+            clock=clock,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: len(publisher.published) == 1)
+        await _until(lambda: len(reader.ids) >= 1)
+        reader.queue.put_nowait(_position(4, aware))
+        await _until(lambda: len(reader.ids) >= 2)
+        assert len(publisher.published) == 1
+        assert publisher.published[0].timestamp == aware
+        assert publisher.published[0].timestamp.tzinfo is UTC
+
+        reader.queue.put_nowait(_position(4, later))
+        await _until(lambda: len(publisher.published) == 2)
+        assert publisher.published[1].timestamp == expected_later
+        assert publisher.published[1].timestamp.tzinfo is UTC
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_resolve_timestamp_compares_a_stored_naive_value():
+    supervisor = _supervisor(
+        reader=QueueReader(),
+        stream=ScriptedStream([]),
+        publisher=FakePublisher(),
+        tracker_ids=[4],
+    )
+    supervisor._last_received_at[4] = datetime(2026, 1, 1)
+    same = supervisor._resolve_timestamp(_position(4, datetime(2026, 1, 1, tzinfo=UTC)))
+    assert same.timestamp == datetime(2026, 1, 1, tzinfo=UTC)
+    assert supervisor._last_received_at[4].tzinfo is UTC
+    older = supervisor._resolve_timestamp(_position(4, datetime(2025, 12, 31)))
+    assert older.timestamp == datetime(2025, 12, 31, tzinfo=UTC)
+    assert supervisor._last_received_at[4] == datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def test_websocket_publish_failure_retries_without_reconnecting(caplog):

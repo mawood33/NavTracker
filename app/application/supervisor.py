@@ -26,6 +26,7 @@ from app.domain.ports import (
     PositionSubscription,
     TrackerCatalog,
 )
+from navtracker_common.timeutil import ensure_utc
 
 logger = logging.getLogger(__name__)
 
@@ -497,9 +498,10 @@ class IngestionSupervisor:
     async def _publish_deduped(self, position: TrackerPosition) -> None:
         async with self._lock:
             resolved = self._resolve_timestamp(position)
-            timestamp = resolved.timestamp
+            timestamp = _utc_or_none(resolved.timestamp)
             if timestamp is None:
                 return
+            resolved = replace(resolved, timestamp=timestamp)
             seen = self._published.setdefault(resolved.tracker_id, set())
             inflight = self._inflight.setdefault(resolved.tracker_id, set())
             if timestamp in seen or timestamp in inflight:
@@ -508,7 +510,7 @@ class IngestionSupervisor:
         await self._outbox.submit(resolved)
 
     async def _mark_published(self, position: TrackerPosition) -> None:
-        timestamp = position.timestamp
+        timestamp = _utc_or_none(position.timestamp)
         if timestamp is None:
             return
         async with self._lock:
@@ -521,7 +523,7 @@ class IngestionSupervisor:
                 self._published[position.tracker_id] = {timestamp}
 
     async def _forget_inflight(self, position: TrackerPosition) -> None:
-        timestamp = position.timestamp
+        timestamp = _utc_or_none(position.timestamp)
         if timestamp is None:
             return
         async with self._lock:
@@ -531,18 +533,20 @@ class IngestionSupervisor:
 
     def _resolve_timestamp(self, position: TrackerPosition) -> TrackerPosition:
         if position.timestamp is not None:
+            stamp = ensure_utc(position.timestamp)
+            position = replace(position, timestamp=stamp)
             current = self._last_received_at.get(position.tracker_id)
-            if current is None or position.timestamp >= current:
-                self._last_received_at[position.tracker_id] = (
-                    position.timestamp
-                )
+            if current is not None:
+                current = ensure_utc(current)
+            if current is None or stamp >= current:
+                self._last_received_at[position.tracker_id] = stamp
             return position
 
         last = self._last_received_at.get(position.tracker_id)
         if last is not None:
-            return replace(position, timestamp=last)
+            return replace(position, timestamp=ensure_utc(last))
 
-        stamped = self.clock.now()
+        stamped = ensure_utc(self.clock.now())
         self._last_received_at[position.tracker_id] = stamped
         return replace(position, timestamp=stamped)
 
@@ -562,3 +566,9 @@ class IngestionSupervisor:
             "Polling resumes from last received fix: %s",
             rendered,
         )
+
+
+def _utc_or_none(moment: datetime | None) -> datetime | None:
+    if moment is None:
+        return None
+    return ensure_utc(moment)

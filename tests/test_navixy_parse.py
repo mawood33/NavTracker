@@ -136,7 +136,30 @@ def test_space_separated_navixy_timestamp_parses():
         }
     )
     assert position is not None
-    assert position.timestamp == datetime(2026, 1, 1)
+    assert position.timestamp == WHEN
+    assert position.timestamp.tzinfo is UTC
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2026-01-01T00:00:00",
+        "2026-01-01 00:00:00",
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T02:00:00+02:00",
+    ],
+)
+def test_poll_and_websocket_timestamps_are_utc(text: str) -> None:
+    state = {"tracker_id": 7, "lat": 1, "lng": 2, "timestamp": text}
+    polled = parse_poll_response({"success": True, "state": state}, 7)
+    streamed = parse_websocket_event({"type": "location", **state})
+    batch = parse_websocket_event({"type": "state_batch", "data": [state]})
+    assert polled.timestamp == WHEN
+    assert polled.timestamp is not None
+    assert polled.timestamp.tzinfo is UTC
+    assert streamed[0].timestamp == polled.timestamp
+    assert batch[0].timestamp == polled.timestamp
 
 
 def test_invalid_timestamp_falls_through_to_the_next_field():

@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Protocol
 
 from app.application.messages import to_outbound_message
 from app.domain.entities import TrackerPosition
 from app.domain.ports import MessagePublisher
+from navtracker_common.timeutil import ensure_utc
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +37,24 @@ def _is_older_than_pending(position: TrackerPosition, current: object) -> bool:
     pending = current
     if not isinstance(pending, _Pending):
         return False
-    if pending.position.timestamp is None or position.timestamp is None:
+    left = _utc_or_none(position.timestamp)
+    right = _utc_or_none(pending.position.timestamp)
+    if left is None or right is None:
         return False
-    return position.timestamp < pending.position.timestamp
+    return left < right
+
+
+def _aware(position: TrackerPosition) -> TrackerPosition:
+    stamp = _utc_or_none(position.timestamp)
+    if stamp is None or stamp == position.timestamp:
+        return position
+    return replace(position, timestamp=stamp)
+
+
+def _utc_or_none(moment: datetime | None) -> datetime | None:
+    if moment is None:
+        return None
+    return ensure_utc(moment)
 
 
 def _stamp(position: TrackerPosition) -> str:
@@ -88,6 +105,7 @@ class LatestFixRetry:
         self._wake = asyncio.Event()
 
     async def submit(self, position: TrackerPosition) -> None:
+        position = _aware(position)
         error = await self._attempt(position)
         if error is None:
             await self._on_success(position)
@@ -103,10 +121,9 @@ class LatestFixRetry:
             if _is_older_than_pending(position, current):
                 abandoned = position
             else:
-                if (
-                    current is not None
-                    and current.position.timestamp != position.timestamp
-                ):
+                if current is not None and _utc_or_none(
+                    current.position.timestamp
+                ) != _utc_or_none(position.timestamp):
                     abandoned = current.position
                 self._pending[position.tracker_id] = _Pending(
                     position,
@@ -151,10 +168,9 @@ class LatestFixRetry:
             dropped: tuple[TrackerPosition, int, BaseException] | None = None
             async with self._lock:
                 current = self._pending.get(tracker_id)
-                if (
-                    current is None
-                    or current.position.timestamp != position.timestamp
-                ):
+                if current is None or _utc_or_none(
+                    current.position.timestamp
+                ) != _utc_or_none(position.timestamp):
                     continue
                 if error is None:
                     del self._pending[tracker_id]

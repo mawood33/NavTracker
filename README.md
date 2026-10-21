@@ -25,7 +25,7 @@ Only Navixy socket failures count toward that threshold, and only a socket failu
 
 A ChatSurfer failure is a publication error on both the websocket path and the poll path. The first attempt returns immediately so a dead publisher cannot stall the Navixy read. The latest unpublished fix per tracker is then retried off that loop, up to 3 attempts, with backoff starting at 0.5 seconds and capped at 2 seconds. After that budget the fix is logged and dropped. An unbounded retry buffer is not used: during an outage the useful payload is the newest fix, and a backlog would burst through the ChatSurfer rate limiter after recovery.
 
-A fix is identified by tracker id and timestamp. The same pair is published once, including across a mode switch. If Navixy omits a timestamp, NavTracker reuses the last timestamp received for that tracker instead of the current clock, so the handoff does not invent a new fix. The first fix for a tracker that has never had a timestamp uses the local clock.
+A fix is identified by tracker id and timestamp. The same pair is published once, including across a mode switch. Navixy timestamps are stored as timezone-aware UTC. A value with no offset is UTC, and a value with an offset is converted to UTC, on both the websocket and the poll path. The same instant is therefore one fix even when one path omits the offset. If Navixy omits a timestamp, NavTracker reuses the last timestamp received for that tracker instead of the current clock, so the handoff does not invent a new fix. The first fix for a tracker that has never had a timestamp uses the local clock.
 
 Backoff after failure `n` (1-based) sleeps `min(cap, initial * 2^(n-1))` seconds. A socket that opens resets the failure streak.
 
@@ -56,6 +56,17 @@ docker compose up --build
 ```
 
 `APP_ENV` selects `config/development.yaml`, `config/staging.yaml`, or `config/production.yaml`. `docker-compose.yml` passes `APP_ENV` into the container and uses `development` when the variable is unset. `APP_ENV=staging docker compose up --build` therefore loads the staging file.
+
+## Logs
+
+The worker and analytics each write the same log lines to stdout and to a rotating file. Tracebacks are included. `docker-compose.yml` bind-mounts `./logs` at `/app/logs`, which works for a Windows or Linux Docker host. The files are `navtracker.log` and `analytics.log`. Leave `LOG_FILE` unset to use those defaults. Set `LOG_FILE` empty to keep stdout only. A shared `.env` value applies to both services, so set a per-service path only when each process has its own environment.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LOG_FILE` | `/app/logs/navtracker.log` or `/app/logs/analytics.log` | File path. Empty disables the file. |
+| `LOG_LEVEL` | `INFO` | Root logger level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). |
+| `LOG_MAX_BYTES` | `10485760` | Rotate after this many bytes. `0` does not rotate. |
+| `LOG_BACKUP_COUNT` | `5` | Older files to keep (`navtracker.log.1`, and so on). |
 
 ## Tests
 
