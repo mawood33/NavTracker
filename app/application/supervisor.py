@@ -11,6 +11,7 @@ from app.application.discovery import (
     discovery_backoff_seconds,
 )
 from app.application.mode import FailoverPolicy, IngestionMode
+from app.application.position_log import log_position
 from app.application.publication import (
     PUBLISH_BACKOFF_CAP_SECONDS,
     PUBLISH_BACKOFF_INITIAL_SECONDS,
@@ -298,7 +299,7 @@ class IngestionSupervisor:
                 continue
             if position.tracker_id not in self._scope:
                 continue
-            await self._publish_isolated(position, "polling continues")
+            await self._publish_isolated(position, "polling continues", "poll")
 
     async def _consume_session(
         self,
@@ -328,6 +329,7 @@ class IngestionSupervisor:
                 await self._publish_isolated(
                     item,
                     "Navixy socket stays open",
+                    "websocket",
                 )
         finally:
             await session.close()
@@ -476,6 +478,7 @@ class IngestionSupervisor:
         self,
         position: TrackerPosition,
         continuing: str,
+        source: str,
     ) -> None:
         """Publish without letting a publisher failure escape.
 
@@ -485,7 +488,7 @@ class IngestionSupervisor:
         """
 
         try:
-            await self._publish_deduped(position)
+            await self._publish_deduped(position, source)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -495,17 +498,27 @@ class IngestionSupervisor:
                 continuing,
             )
 
-    async def _publish_deduped(self, position: TrackerPosition) -> None:
+    async def _publish_deduped(self, position: TrackerPosition, source: str) -> None:
         async with self._lock:
-            resolved = self._resolve_timestamp(position)
-            timestamp = _utc_or_none(resolved.timestamp)
-            if timestamp is None:
+            previous = self._last_received_at.get(position.tracker_id)
+            resolved, timestamp, move_cursor = self._plan_timestamp(position)
+            decision = _dedupe_decision(
+                timestamp,
+                self._published.get(position.tracker_id, set()),
+                self._inflight.get(position.tracker_id, set()),
+            )
+            log_position(
+                position,
+                source=source,
+                compared_to=previous,
+                normalized=timestamp,
+                decision=decision,
+            )
+            if move_cursor and timestamp is not None:
+                self._last_received_at[position.tracker_id] = timestamp
+            if decision != "publish" or timestamp is None:
                 return
-            resolved = replace(resolved, timestamp=timestamp)
-            seen = self._published.setdefault(resolved.tracker_id, set())
-            inflight = self._inflight.setdefault(resolved.tracker_id, set())
-            if timestamp in seen or timestamp in inflight:
-                return
+            inflight = self._inflight.setdefault(position.tracker_id, set())
             inflight.add(timestamp)
         await self._outbox.submit(resolved)
 
@@ -532,23 +545,36 @@ class IngestionSupervisor:
                 inflight.discard(timestamp)
 
     def _resolve_timestamp(self, position: TrackerPosition) -> TrackerPosition:
+        resolved, stamp, move_cursor = self._plan_timestamp(position)
+        if move_cursor and stamp is not None:
+            self._last_received_at[position.tracker_id] = stamp
+        return resolved
+
+    def _plan_timestamp(
+        self,
+        position: TrackerPosition,
+    ) -> tuple[TrackerPosition, datetime | None, bool]:
+        """Return the UTC fix, its stamp, and whether the cursor moves.
+
+        This does not change supervisor state. A missing timestamp reuses
+        the last received stamp, or the clock when the tracker has none.
+        """
+
         if position.timestamp is not None:
             stamp = ensure_utc(position.timestamp)
-            position = replace(position, timestamp=stamp)
             current = self._last_received_at.get(position.tracker_id)
             if current is not None:
                 current = ensure_utc(current)
-            if current is None or stamp >= current:
-                self._last_received_at[position.tracker_id] = stamp
-            return position
+            move_cursor = current is None or stamp >= current
+            return replace(position, timestamp=stamp), stamp, move_cursor
 
         last = self._last_received_at.get(position.tracker_id)
         if last is not None:
-            return replace(position, timestamp=ensure_utc(last))
+            stamp = ensure_utc(last)
+            return replace(position, timestamp=stamp), stamp, False
 
         stamped = ensure_utc(self.clock.now())
-        self._last_received_at[position.tracker_id] = stamped
-        return replace(position, timestamp=stamped)
+        return replace(position, timestamp=stamped), stamped, True
 
     def _log_resume_cursor(self) -> None:
         if not self._last_received_at:
@@ -572,3 +598,15 @@ def _utc_or_none(moment: datetime | None) -> datetime | None:
     if moment is None:
         return None
     return ensure_utc(moment)
+
+
+def _dedupe_decision(
+    timestamp: datetime | None,
+    seen: set[datetime],
+    inflight: set[datetime],
+) -> str:
+    if timestamp is None:
+        return "drop"
+    if timestamp in seen or timestamp in inflight:
+        return "duplicate"
+    return "publish"

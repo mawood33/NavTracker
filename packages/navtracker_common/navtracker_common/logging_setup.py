@@ -11,9 +11,12 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from navtracker_common.settings import bool_setting
+
 DEFAULT_LEVEL = "INFO"
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 DEFAULT_BACKUP_COUNT = 5
+POSITIONS_LOGGER = "navtracker.positions"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 
@@ -21,6 +24,7 @@ def configure_logging(default_file: str) -> None:
     """Attach stdout and, unless ``LOG_FILE`` is blank, a rotating file."""
 
     level = _level(os.getenv("LOG_LEVEL", DEFAULT_LEVEL))
+    _record_level, positions_level = position_logging()
     max_bytes = _non_negative("LOG_MAX_BYTES", os.getenv("LOG_MAX_BYTES"), DEFAULT_MAX_BYTES)
     backup_count = _non_negative(
         "LOG_BACKUP_COUNT",
@@ -39,6 +43,8 @@ def configure_logging(default_file: str) -> None:
     stdout = logging.StreamHandler(sys.stdout)
     stdout.setFormatter(formatter)
     root.addHandler(stdout)
+    positions = logging.getLogger(POSITIONS_LOGGER)
+    positions.setLevel(logging.NOTSET if positions_level is None else positions_level)
     if not path:
         return
     destination = Path(path)
@@ -56,6 +62,25 @@ def configure_logging(default_file: str) -> None:
     )
     rotating.setFormatter(formatter)
     root.addHandler(rotating)
+
+
+def position_logging() -> tuple[int, int | None]:
+    """Return ``(record_level, logger_level)`` for tracker positions.
+
+    Unset ``LOG_POSITIONS`` logs at INFO. ``true`` does the same. ``false``
+    logs at DEBUG and leaves the logger unset, so the lines stay quiet
+    until ``navtracker.positions`` is raised to DEBUG. ``debug`` raises
+    that logger to DEBUG without lowering the root level.
+    """
+
+    raw = os.getenv("LOG_POSITIONS")
+    if raw is None:
+        return logging.INFO, logging.INFO
+    if raw.strip().lower() == "debug":
+        return logging.DEBUG, logging.DEBUG
+    if bool_setting("LOG_POSITIONS", raw):
+        return logging.INFO, logging.INFO
+    return logging.DEBUG, None
 
 
 def _level(value: str | None) -> int:

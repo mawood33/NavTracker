@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from app.domain.entities import TrackerPosition
@@ -38,6 +38,7 @@ def test_poll_and_websocket_parse_the_same_state():
         altitude=12.5,
         connection_status="active",
         movement_status="parked",
+        received_timestamp=WHEN,
     )
 
 
@@ -100,6 +101,7 @@ def test_websocket_flat_event_keeps_status_and_altitude():
             altitude=4.0,
             connection_status="idle",
             movement_status="moving",
+            received_timestamp=WHEN,
         )
     ]
 
@@ -138,6 +140,8 @@ def test_space_separated_navixy_timestamp_parses():
     assert position is not None
     assert position.timestamp == WHEN
     assert position.timestamp.tzinfo is UTC
+    assert position.received_timestamp == datetime(2026, 1, 1)
+    assert position.received_timestamp.tzinfo is None
 
 
 @pytest.mark.parametrize(
@@ -160,6 +164,16 @@ def test_poll_and_websocket_timestamps_are_utc(text: str) -> None:
     assert polled.timestamp.tzinfo is UTC
     assert streamed[0].timestamp == polled.timestamp
     assert batch[0].timestamp == polled.timestamp
+    assert polled.received_timestamp is not None
+    if text.endswith(("Z", "+00:00")):
+        assert polled.received_timestamp.tzinfo is not None
+        assert polled.received_timestamp.utcoffset() == timedelta(0)
+    elif text.endswith("+02:00"):
+        assert polled.received_timestamp.utcoffset() == timedelta(hours=2)
+    else:
+        assert polled.received_timestamp.tzinfo is None
+    assert streamed[0].received_timestamp == polled.received_timestamp
+    assert batch[0].received_timestamp == polled.received_timestamp
 
 
 def test_invalid_timestamp_falls_through_to_the_next_field():

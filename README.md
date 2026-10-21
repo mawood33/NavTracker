@@ -67,6 +67,9 @@ The worker and analytics each write the same log lines to stdout and to a rotati
 | `LOG_LEVEL` | `INFO` | Root logger level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). |
 | `LOG_MAX_BYTES` | `10485760` | Rotate after this many bytes. `0` does not rotate. |
 | `LOG_BACKUP_COUNT` | `5` | Older files to keep (`navtracker.log.1`, and so on). |
+| `LOG_POSITIONS` | `true` | Log each tracker fix before publish. `false` keeps the lines at DEBUG. `debug` raises `navtracker.positions` to DEBUG. |
+
+Each fix is logged on `navtracker.positions` before timestamp resolution, dedupe, and publish. The line names the tracker id, the source (`websocket` or `poll`), the timestamp as received with its type and tzinfo, the normalized UTC timestamp, latitude, longitude, speed, heading, the previous cursor it is compared with (including that cursor's type and tzinfo), and the dedupe decision (`publish`, `duplicate`, or `drop`). The same line goes to stdout and the log file. API keys and encrypted payloads are not written.
 
 ## Tests
 
