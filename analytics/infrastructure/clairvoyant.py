@@ -17,6 +17,7 @@ Assumptions, all configurable:
 """
 
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 
 import httpx
@@ -28,7 +29,10 @@ from analytics.application.ports import (
 from analytics.domain.reports import Report, ReportPolicy, parse_layer_payload
 from analytics.domain.tracks import GpsFix, fix_from_mapping
 
+logger = logging.getLogger(__name__)
+
 SUBSCRIBE_ACTION = "subscribe"
+CONNECT_TIMEOUT_SECONDS = 15.0
 POLL_PATH = "/layers/{layer}/positions"
 REPORT_PATH = "/layers/{layer}/reports"
 ReportFetch = Callable[[str, Mapping[str, str]], Awaitable[object]]
@@ -146,16 +150,26 @@ class ClairvoyantWebSocket:
         self._connect = connect or websockets.connect
 
     async def connect(self) -> _WebSocketSubscription:
+        logger.info("Connecting Clairvoyant websocket layer=%s", self.layer)
         try:
-            socket = await self._connect(self.ws_url)
+            socket = await self._open()
             await socket.send(
                 json.dumps(build_subscribe_message(self.layer, self.api_key))
             )
         except Exception as exc:
+            logger.warning("Clairvoyant websocket connect failed layer=%s", self.layer)
             raise ClairvoyantConnectionError(
                 "Clairvoyant websocket connect failed"
             ) from exc
         return _WebSocketSubscription(socket, self.layer)
+
+    async def _open(self) -> websockets.ClientConnection:
+        if self._connect is websockets.connect:
+            return await websockets.connect(
+                self.ws_url,
+                open_timeout=CONNECT_TIMEOUT_SECONDS,
+            )
+        return await self._connect(self.ws_url)
 
 
 class ClairvoyantReportClient:

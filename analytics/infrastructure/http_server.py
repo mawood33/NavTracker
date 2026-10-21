@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+from collections.abc import Callable
 from functools import partial
 from urllib.parse import parse_qs
 
@@ -13,10 +15,18 @@ from analytics.infrastructure.websocket import (
     read_client_frame,
 )
 
+logger = logging.getLogger(__name__)
+
 _UPLOAD_PATHS = {"/reference/upload", "/v1/coord-card", "/v1/coord-card/schema"}
+_HEADER_TIMEOUT_SECONDS = 30.0
+_BODY_TIMEOUT_SECONDS = 60.0
 
 
-async def serve(settings: AnalyticsSettings, service: AnalyticsService) -> None:
+async def serve(
+    settings: AnalyticsSettings,
+    service: AnalyticsService,
+    on_listening: Callable[[int], None] | None = None,
+) -> None:
     """Bind the JSON API and the ``/ws`` stream. Call this only from main."""
 
     async def client(
@@ -55,6 +65,12 @@ async def serve(settings: AnalyticsSettings, service: AnalyticsService) -> None:
         except BodyTooLarge:
             writer.write(encode_response(413, {"error": "request body is too large"}))
             await writer.drain()
+        except LengthRequired:
+            writer.write(encode_response(411, {"error": "content length is required"}))
+            await writer.drain()
+        except RequestTimeout:
+            writer.write(encode_response(408, {"error": "request timed out"}))
+            await writer.drain()
         except Exception:
             writer.write(encode_response(500, {"error": "internal error"}))
             await writer.drain()
@@ -67,12 +83,34 @@ async def serve(settings: AnalyticsSettings, service: AnalyticsService) -> None:
         settings.http_host,
         settings.http_port,
     )
+    _announce(server, on_listening)
     async with server:
         await server.serve_forever()
 
 
 class BodyTooLarge(Exception):
     """The declared or actual body is over the configured cap."""
+
+
+class LengthRequired(Exception):
+    """A chunked body arrived without a length this server will wait on."""
+
+
+class RequestTimeout(Exception):
+    """The peer stalled while the request was being read."""
+
+
+def _announce(server: asyncio.Server, on_listening: Callable[[int], None] | None) -> None:
+    sockets = server.sockets
+    if not sockets:
+        logger.info("Analytics HTTP listening")
+        return
+    bound = sockets[0].getsockname()
+    host = str(bound[0])
+    port = int(bound[1])
+    logger.info("Analytics HTTP listening on %s:%s", host, port)
+    if on_listening is not None:
+        on_listening(port)
 
 
 async def _serve_websocket(
@@ -161,7 +199,12 @@ async def _request(
     max_upload: int,
 ) -> tuple[str, str, bytes, dict[str, str]] | None:
     try:
-        head = await reader.readuntil(b"\r\n\r\n")
+        head = await asyncio.wait_for(
+            reader.readuntil(b"\r\n\r\n"),
+            timeout=_HEADER_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        raise RequestTimeout from exc
     except asyncio.IncompleteReadError as exc:
         head = exc.partial
     if not head:
@@ -179,11 +222,14 @@ async def _request(
         headers[name.strip().lower()] = value.strip()
     target = parts[1].split("?", 1)[0].rstrip("/") or "/"
     cap = max_upload if target in _UPLOAD_PATHS else max_body
+    if "chunked" in headers.get("transfer-encoding", "").lower():
+        raise LengthRequired
     raw_length = headers.get("content-length")
     if raw_length is None or raw_length == "":
-        body = await reader.read(cap + 1)
-        if len(body) > cap:
-            raise BodyTooLarge
+        # HTTP requests with no length and no chunked encoding have an empty
+        # body. Waiting for the client to close would deadlock a GET /health:
+        # the client is waiting for the status line.
+        body = b""
     else:
         try:
             length = int(raw_length)
@@ -191,5 +237,14 @@ async def _request(
             raise BodyTooLarge from None
         if length < 0 or length > cap:
             raise BodyTooLarge
-        body = await reader.readexactly(length) if length else b""
+        try:
+            body = (
+                await asyncio.wait_for(reader.readexactly(length), timeout=_BODY_TIMEOUT_SECONDS)
+                if length
+                else b""
+            )
+        except TimeoutError as exc:
+            raise RequestTimeout from exc
+        except asyncio.IncompleteReadError as exc:
+            raise RequestTimeout from exc
     return parts[0], parts[1], body, headers
