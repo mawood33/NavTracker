@@ -5,12 +5,14 @@ from analytics.application.dispatch import truth_read_rooms
 from analytics.composition import build_analytics, run_sources
 from analytics.infrastructure.config import load_analytics_settings
 from analytics.infrastructure.http_server import serve
+from navtracker_common.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
+DEFAULT_LOG_FILE = "/app/logs/analytics.log"
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging(DEFAULT_LOG_FILE)
     settings = load_analytics_settings()
     app = build_analytics(settings)
     app.service.load_reference()

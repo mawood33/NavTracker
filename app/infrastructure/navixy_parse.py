@@ -11,6 +11,9 @@ reads both, with the poll shape winning when both are present:
 - ``connection_status`` and ``movement_status`` from the state object
 
 A missing timestamp stays missing. It is not replaced with the clock.
+A value with no offset is UTC. Aware values are converted to UTC. The
+poll and websocket parsers share this rule. ``received_timestamp`` keeps
+the parsed value from before that conversion, including a naive timezone.
 """
 
 from datetime import datetime
@@ -18,6 +21,7 @@ from typing import Any
 
 from app.domain.entities import TrackerPosition
 from app.domain.errors import TrackerDiscoveryError
+from navtracker_common.timeutil import ensure_utc
 
 
 def parse_poll_response(payload: Any, tracker_id: int) -> TrackerPosition:
@@ -92,15 +96,17 @@ def parse_state(
     if resolved_id is None:
         return None
 
+    timestamp, received = _first_timestamp(
+        gps_dict.get("updated"),
+        state.get("timestamp"),
+        state.get("updated"),
+    )
     return TrackerPosition(
         tracker_id=resolved_id,
         latitude=latitude,
         longitude=longitude,
-        timestamp=_first_timestamp(
-            gps_dict.get("updated"),
-            state.get("timestamp"),
-            state.get("updated"),
-        ),
+        timestamp=timestamp,
+        received_timestamp=received,
         speed=_first_float(gps_dict.get("speed"), state.get("speed")),
         heading=_first_float(gps_dict.get("heading"), state.get("heading")),
         altitude=_first_float(
@@ -156,12 +162,16 @@ def _as_float(value: object) -> float | None:
         return None
 
 
-def _first_timestamp(*values: object) -> datetime | None:
+def _first_timestamp(
+    *values: object,
+) -> tuple[datetime | None, datetime | None]:
+    """Return ``(utc, as_parsed)`` for the first usable timestamp."""
+
     for value in values:
         parsed = _timestamp(value)
         if parsed is not None:
-            return parsed
-    return None
+            return ensure_utc(parsed), parsed
+    return None, None
 
 
 def _timestamp(value: object) -> datetime | None:

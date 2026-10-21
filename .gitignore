@@ -3,3 +3,4 @@ keys/*
 .env.*
 !.env.example
 __pycache__/
+logs/

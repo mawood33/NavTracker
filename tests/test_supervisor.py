@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from app.application.mode import FailoverPolicy, IngestionMode
 from app.application.supervisor import IngestionSupervisor
@@ -482,6 +482,144 @@ def test_dedupes_tracker_id_and_timestamp_across_failover(caplog):
         await _shutdown(task)
 
     asyncio.run(scenario())
+
+
+def test_mixed_naive_and_aware_timestamps_dedupe_across_failover(caplog):
+    naive = datetime(2026, 1, 1)
+    aware = datetime(2026, 1, 1, tzinfo=UTC)
+    later = datetime(2026, 1, 1, 2, 5, tzinfo=timezone(timedelta(hours=2)))
+    expected_later = datetime(2026, 1, 1, 0, 5, tzinfo=UTC)
+
+    async def scenario():
+        caplog.set_level(logging.INFO)
+        logging.getLogger("navtracker.positions").setLevel(logging.INFO)
+        clock = FakeClock()
+        reader = QueueReader()
+        stream = ScriptedStream(
+            [
+                ScriptedSession(
+                    [_position(4, naive), SourceConnectionError("drop")]
+                ),
+                ScriptedSession([]),
+            ]
+        )
+        publisher = FakePublisher()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[4],
+            policy=_policy(max_attempts=1, probe_interval_seconds=0),
+            clock=clock,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: len(publisher.published) == 1)
+        await _until(lambda: len(reader.ids) >= 1)
+        reader.queue.put_nowait(_position(4, aware))
+        await _until(lambda: len(reader.ids) >= 2)
+        assert len(publisher.published) == 1
+        assert publisher.published[0].timestamp == aware
+        assert publisher.published[0].timestamp.tzinfo is UTC
+
+        reader.queue.put_nowait(_position(4, later))
+        await _until(lambda: len(publisher.published) == 2)
+        assert publisher.published[1].timestamp == expected_later
+        assert publisher.published[1].timestamp.tzinfo is UTC
+        text = caplog.text
+        assert "source=websocket" in text
+        assert "source=poll" in text
+        assert "tracker_id=4" in text
+        assert "raw_type=datetime" in text
+        assert "raw_tzinfo=None" in text
+        assert "raw_tzinfo=UTC" in text
+        assert "raw_tzinfo=UTC+02:00" in text
+        assert "normalized_utc=2026-01-01T00:00:00+00:00" in text
+        assert "previous_tzinfo=None" in text
+        assert "decision=publish" in text
+        assert "decision=duplicate" in text
+        assert "latitude=1.0" in text
+        assert "longitude=2.0" in text
+        assert "speed=None" in text
+        assert "heading=None" in text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_position_log_shows_a_naive_cursor_before_publish(caplog):
+    async def scenario():
+        caplog.set_level(logging.INFO)
+        logging.getLogger("navtracker.positions").setLevel(logging.INFO)
+        reader = QueueReader()
+        publisher = FakePublisher()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=ExplodingStream(),
+            publisher=publisher,
+            tracker_ids=[4],
+            mode=IngestionMode.POLL,
+        )
+        supervisor._last_received_at[4] = datetime(2026, 1, 1)
+        task = asyncio.create_task(supervisor.run())
+        await _until(lambda: len(reader.ids) >= 1)
+        reader.queue.put_nowait(
+            TrackerPosition(
+                tracker_id=4,
+                latitude=10.5,
+                longitude=-20.25,
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                received_timestamp=datetime(2026, 1, 1),
+                speed=1.5,
+                heading=90.0,
+                connection_status="super-secret-api-key",
+            )
+        )
+        await _until(lambda: len(publisher.published) == 1)
+        reader.queue.put_nowait(
+            TrackerPosition(
+                tracker_id=4,
+                latitude=10.5,
+                longitude=-20.25,
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                speed=1.5,
+                heading=90.0,
+            )
+        )
+        await _until(lambda: len(reader.ids) >= 3)
+        text = caplog.text
+        assert (
+            "previous_type=datetime previous_tzinfo=None "
+            "previous_utc=2026-01-01T00:00:00+00:00 decision=publish"
+        ) in text
+        assert "source=poll" in text
+        assert "raw_tzinfo=None" in text
+        assert "normalized_utc=2026-01-01T00:00:00+00:00" in text
+        assert "latitude=10.5" in text
+        assert "longitude=-20.25" in text
+        assert "speed=1.5" in text
+        assert "heading=90.0" in text
+        assert "decision=duplicate" in text
+        assert "super-secret-api-key" not in text
+        assert len(publisher.published) == 1
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_resolve_timestamp_compares_a_stored_naive_value():
+    supervisor = _supervisor(
+        reader=QueueReader(),
+        stream=ScriptedStream([]),
+        publisher=FakePublisher(),
+        tracker_ids=[4],
+    )
+    supervisor._last_received_at[4] = datetime(2026, 1, 1)
+    same = supervisor._resolve_timestamp(_position(4, datetime(2026, 1, 1, tzinfo=UTC)))
+    assert same.timestamp == datetime(2026, 1, 1, tzinfo=UTC)
+    assert supervisor._last_received_at[4].tzinfo is UTC
+    older = supervisor._resolve_timestamp(_position(4, datetime(2025, 12, 31)))
+    assert older.timestamp == datetime(2025, 12, 31, tzinfo=UTC)
+    assert supervisor._last_received_at[4] == datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def test_websocket_publish_failure_retries_without_reconnecting(caplog):

@@ -30,7 +30,8 @@ COPY packages ./packages
 COPY app ./app
 COPY config ./config
 
-RUN chown -R appuser:appgroup /app
+RUN mkdir -p /app/logs \
+    && chown -R appuser:appgroup /app
 
 USER appuser
 
