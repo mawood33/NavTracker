@@ -58,8 +58,10 @@ async def run_clairvoyant(
 
     ticker = clock or _Clock()
     if mode == "poll":
+        logger.info("Clairvoyant API poll starting")
         await _poll_forever(reader, on_fixes, policy, ticker)
         return
+    logger.info("Clairvoyant websocket source starting")
     failures = 0
     while True:
         try:

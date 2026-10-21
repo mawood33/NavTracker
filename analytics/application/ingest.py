@@ -303,6 +303,7 @@ class IngestService:
         cursor = ""
         seen: set[str] = set()
         window: dict[str, object] | None = None
+        logger.info("ChatSurfer backfill starting room=%s", room)
         while True:
             try:
                 page = await client.search_messages(

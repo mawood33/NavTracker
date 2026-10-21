@@ -57,8 +57,10 @@ async def run_chat_ingest(
     if mode == "poll" or stream is None:
         if on_mode is not None:
             on_mode("poll")
+        logger.info("ChatSurfer REST poll starting")
         await _poll_forever(poll, ticker, poll_interval)
         return
+    logger.info("ChatSurfer websocket source starting")
     if on_mode is not None:
         on_mode("websocket")
     failures = 0
