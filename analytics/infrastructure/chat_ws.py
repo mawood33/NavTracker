@@ -6,6 +6,7 @@ Topics follow ChatSurfer REST API 4.24.0. SockJS is not required.
 
 import asyncio
 import json
+import logging
 import ssl
 from collections import deque
 from collections.abc import Callable
@@ -17,8 +18,11 @@ from analytics.application.ports import ChatConnectionError
 from navtracker_common.chatsurfer import ChatRoomMessage, ChatSurferApiClient
 from navtracker_common.stomp import StompFrame, connect_frame, decode_frames, subscribe_frame
 
+logger = logging.getLogger(__name__)
+
 HEARTBEAT = b"\n"
 HEARTBEAT_SECONDS = 15.0
+CONNECT_TIMEOUT_SECONDS = 15.0
 
 
 class ChatStompSubscription:
@@ -101,14 +105,16 @@ class ChatStompStream:
         host = parsed.netloc
         url = f"{scheme}://{host}/ws/connect"
         ssl_context = _ssl_context(self._cert, self._key) if scheme == "wss" else None
+        logger.info("Connecting ChatSurfer websocket url=%s", _public_url(url))
         try:
             socket = await websockets.connect(
                 url,
                 additional_headers={"Api-Key": self._api_key},
                 ssl=ssl_context,
-                open_timeout=15,
+                open_timeout=CONNECT_TIMEOUT_SECONDS,
             )
         except Exception as exc:
+            logger.warning("ChatSurfer websocket connect failed url=%s", _public_url(url))
             raise ChatConnectionError("ChatSurfer websocket connect failed") from exc
         try:
             await socket.send(connect_frame(host))
@@ -190,6 +196,11 @@ async def _recv(socket: websockets.ClientConnection) -> bytes | str | None:
         return await asyncio.wait_for(socket.recv(), timeout=HEARTBEAT_SECONDS)
     except TimeoutError:
         return None
+
+
+def _public_url(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed._replace(query="", fragment="", params="").geturl()
 
 
 def _ssl_context(cert: str, key: str) -> ssl.SSLContext:

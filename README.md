@@ -97,7 +97,7 @@ The check uses `config/development.yaml`, `config/staging.yaml`, and `config/pro
 docker compose up --build analytics
 ```
 
-`APP_ENV` selects `config/analytics/<APP_ENV>.yaml`. The HTTP API listens on port 8080. Reference files (Player Data CSV/XLSX/KML and MSR KML/KMZ) are read from `ANALYTICS_REFERENCE_DIR` (`/data/reference` in Compose, mounted from `./reference`).
+`APP_ENV` selects `config/analytics/<APP_ENV>.yaml`. The HTTP API listens on port 8080. `GET /health` is answered as soon as that socket is bound. A stalled or unreachable ChatSurfer or Clairvoyant source does not delay it. The log line `Analytics HTTP listening` is followed by whether each source is disabled, connecting, or failed, which is what `docker compose logs analytics` shows during startup. Reference files (Player Data CSV/XLSX/KML and MSR KML/KMZ) are read from `ANALYTICS_REFERENCE_DIR` (`/data/reference` in Compose, mounted from `./reference`).
 
 GPS truth fixes can arrive from the ChatSurfer truth room (`room_name` or `room_name_encrypted`, chosen by `CHAT_SURFER_ENCRYPTION_REQUIRED`) and, when enabled, from a Clairvoyant websocket with API failover. Uploaded reference files are not written to that room. Staging and production enable Clairvoyant with placeholder URLs. Development leaves it off. The Clairvoyant message shapes are assumed and documented in `analytics/infrastructure/clairvoyant.py`.
 

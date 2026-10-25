@@ -39,8 +39,10 @@ class AnalysisLoop:
         settings = self._state.settings
         if not settings.chat_read_enabled:
             self._state._chat_transport = "disabled"
+            logger.info("ChatSurfer ingest disabled")
             while True:
                 await asyncio.sleep(settings.chat_poll_seconds or 15)
+        logger.info("ChatSurfer ingest starting mode=%s", settings.chat_ingest_mode)
         await self._warn_catalog()
         policy = ChatFailover(
             max_attempts=settings.chat_failover_max_attempts,
@@ -103,6 +105,7 @@ class AnalysisLoop:
         from analytics.application.dispatch import watched_chat_rooms
 
         rooms = watched_chat_rooms(self._state._coord_card, self._state.settings)
+        logger.info("ChatSurfer catalog check starting rooms=%s", list(rooms))
         try:
             await client.warn_catalog(rooms)
         except Exception:
@@ -122,6 +125,10 @@ class AnalysisLoop:
 
     async def run_analysis_loop(self, analyze: Callable[[], None] | None = None) -> None:
         step = analyze or self._analysis.analyze
+        logger.info(
+            "Analysis loop started interval=%ss",
+            self._state.settings.analysis_interval_seconds,
+        )
         while True:
             try:
                 async with self._state._lock:
