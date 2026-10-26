@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from app.domain.errors import SourceConnectionError
@@ -126,8 +127,10 @@ def test_connect_sends_selected_subscription(monkeypatch):
         async def close(self):
             self.closed = True
 
+    seen = []
+
     async def fake_connect(url):
-        assert url == "wss://example.test/events"
+        seen.append(url)
         return Socket()
 
     monkeypatch.setattr(
@@ -141,6 +144,18 @@ def test_connect_sends_selected_subscription(monkeypatch):
         await subscription.close()
 
     asyncio.run(connect())
+    parts = urlsplit(seen[0])
+    assert parts.scheme == "wss"
+    assert parts.netloc == "example.test"
+    assert parts.path == "/events"
+    query = dict(parse_qsl(parts.query))
+    assert query["X-Atmosphere-tracking-id"] == "0"
+    assert query["X-Atmosphere-Framework"] == "2.3.6-javascript"
+    assert query["X-Atmosphere-Transport"] == "websocket"
+    assert query["Content-Type"] == "application/json"
+    assert query["X-atmo-protocol"] == "true"
+    assert "X-Atmosphere-TrackMessageSize" not in query
+    assert "hash-1" not in seen[0]
     assert sent[0]["requests"][0]["target"]["type"] == "selected"
     assert sent[0]["requests"][0]["target"]["tracker_ids"] == [4, 5]
     assert sent[0]["requests"][1]["target"]["tracker_ids"] == [4, 5]

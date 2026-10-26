@@ -192,6 +192,27 @@ def test_invalid_timestamp_falls_through_to_the_next_field():
     )
 
 
+def test_documented_event_envelope_is_current_state():
+    batch = parse_websocket_event(
+        {"type": "event", "event": "state_batch", "data": [dict(STATE)]}
+    )
+    single = parse_websocket_event(
+        {"type": "event", "event": "state", "data": dict(STATE)}
+    )
+    assert [item.tracker_id for item in batch] == [7]
+    assert [item.tracker_id for item in single] == [7]
+    assert batch[0].latitude == 10.5
+    assert parse_websocket_event(
+        {"type": "event", "event": "readings_batch", "data": [STATE]}
+    ) == []
+    assert parse_websocket_event(
+        {"type": "event", "event": "lifecycle", "data": {}}
+    ) == []
+    assert parse_websocket_event(
+        {"type": "event", "event": "logout", "data": {}}
+    ) == []
+
+
 def test_websocket_ignores_frames_without_a_fix():
     assert parse_websocket_event({"type": "readings_batch", "data": [STATE]}) == []
     assert parse_websocket_event({"type": "location", "tracker_id": 1}) == []

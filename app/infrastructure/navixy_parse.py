@@ -49,16 +49,23 @@ def parse_poll_response(payload: Any, tracker_id: int) -> TrackerPosition:
 
 
 def parse_websocket_event(event: dict[str, Any]) -> list[TrackerPosition]:
-    """Parse one websocket frame into zero or more positions.
+    """Parse one websocket event into zero or more current positions.
 
-    Flat ``location`` events (and frames with no type) are the shape this
-    service already receives. ``state_batch`` carries the same state
-    objects as the poll API, one per tracker.
+    Navixy documents ``type`` ``event`` with ``event`` ``state_batch``
+    (an array of current states) or ``state`` (one state). Older frames
+    put ``state_batch`` in ``type``, and flat ``location`` frames omit
+    the envelope. ``readings_batch``, ``lifecycle``, and ``logout`` are
+    not positions.
     """
 
-    event_type = event.get("type")
-    if event_type in (None, "location"):
-        position = parse_state(event)
+    event_type = _websocket_kind(event)
+    if event_type in (None, "location", "state"):
+        source: dict[str, Any] = event
+        if event_type == "state":
+            data = event.get("data")
+            if isinstance(data, dict):
+                source = data
+        position = parse_state(source)
         return [position] if position is not None else []
     if event_type == "state_batch":
         data = event.get("data")
@@ -73,6 +80,22 @@ def parse_websocket_event(event: dict[str, Any]) -> list[TrackerPosition]:
                 positions.append(position)
         return positions
     return []
+
+
+def _websocket_kind(event: dict[str, Any]) -> str | None:
+    """Navixy documents ``type=event`` and ``event=state_batch``.
+
+    Older frames put ``state_batch`` in ``type``. Both are the same batch.
+    """
+
+    event_type = event.get("type")
+    if event_type == "event":
+        name = event.get("event")
+        if isinstance(name, str):
+            return name
+    if isinstance(event_type, str):
+        return event_type
+    return None
 
 
 def parse_state(
