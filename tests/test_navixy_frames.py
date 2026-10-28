@@ -220,6 +220,121 @@ def _reply(value):
     )
 
 
+_FLEET = (
+    1683373,
+    1683374,
+    1683375,
+    2835799,
+    2835800,
+    2835802,
+    3606396,
+    3617454,
+    3617458,
+    3617459,
+    3617461,
+    3617462,
+)
+_EU_WS = "wss://api.eu.navixy.com/v2/event/subscription"
+
+
+def _connect_reply(monkeypatch, payload, tracker_ids, source_to_tracker=None):
+    class Socket:
+        async def send(self, data):
+            return None
+
+        async def recv(self):
+            return json.dumps(payload)
+
+        async def close(self):
+            return None
+
+    async def fake_connect(url):
+        assert url.startswith(_EU_WS)
+        return Socket()
+
+    monkeypatch.setattr(
+        "app.infrastructure.navixy_ws.websockets.connect",
+        fake_connect,
+    )
+    client = NavixyWebSocketClient(_EU_WS, "secret-hash")
+
+    async def run():
+        subscription = await client.connect(
+            list(tracker_ids),
+            source_to_tracker=source_to_tracker,
+        )
+        await subscription.close()
+        return subscription.subscription_counts
+
+    return asyncio.run(run())
+
+
+def test_twelve_normal_trackers_stay_subscribed(caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    value = {str(tracker_id): "normal" for tracker_id in _FLEET}
+    counts = _connect_reply(
+        monkeypatch,
+        {
+            "type": "response",
+            "action": "subscription/subscribe",
+            "events": ["state_batch", "readings_batch"],
+            "data": {
+                "state_batch": {"success": "true", "value": value},
+                "readings_batch": {
+                    "success": True,
+                    "value": dict(value),
+                },
+            },
+        },
+        _FLEET,
+    )
+    assert counts["normal"] == 12
+    assert counts["blocked"] == 0
+    assert "normal=12" in caplog.text
+    assert "Subscribed to Navixy websocket" in caplog.text
+    assert "no deliverable" not in caplog.text
+    assert "secret-hash" not in caplog.text
+
+
+def test_reply_source_ids_count_as_the_selected_trackers(caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    sources = {900000 + tracker_id: tracker_id for tracker_id in _FLEET}
+    value = {str(source_id): "normal" for source_id in sources}
+    counts = _connect_reply(
+        monkeypatch,
+        {
+            "type": "response",
+            "action": "subscription/subscribe",
+            "events": ["state_batch"],
+            "data": {"state_batch": {"value": value}},
+        },
+        _FLEET,
+        sources,
+    )
+    assert counts["normal"] == 12
+    assert "no deliverable" not in caplog.text
+
+
+def test_reply_with_no_normal_tracker_still_fails(caplog, monkeypatch):
+    caplog.set_level(logging.WARNING)
+    value = {str(tracker_id): "unknown" for tracker_id in _FLEET}
+    with pytest.raises(SourceConnectionError, match="normal=0"):
+        _connect_reply(
+            monkeypatch,
+            {
+                "type": "response",
+                "action": "subscription/subscribe",
+                "events": ["state_batch"],
+                "data": {
+                    "state_batch": {"success": True, "value": value},
+                },
+            },
+            _FLEET,
+        )
+    assert "no deliverable" in caplog.text
+    assert "normal=0" in caplog.text
+
+
 def test_subscription_reply_is_logged_and_a_leading_state_is_kept(caplog, monkeypatch):
     caplog.set_level(logging.INFO)
     body = json.dumps(
@@ -284,7 +399,7 @@ def test_subscription_reply_is_logged_and_a_leading_state_is_kept(caplog, monkey
     assert socket.sent["requests"][0]["format"] == "full"
     assert socket.sent["requests"][0]["target"]["type"] == "selected"
     assert "normal=1" in caplog.text
-    assert "blocked=1" in caplog.text
+    assert "blocked=0" in caplog.text
     assert "Navixy websocket event type=state_batch count=1" in caplog.text
     assert "secret-hash" not in caplog.text
 

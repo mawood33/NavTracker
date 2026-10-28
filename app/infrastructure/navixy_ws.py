@@ -199,17 +199,88 @@ def _source_ids(event: dict[str, Any]) -> list[int]:
     return found
 
 
-def _status_counts(block: object) -> dict[str, int]:
+def _status_counts(
+    block: object,
+    tracker_ids: set[int],
+    source_to_tracker: Mapping[int, int] | None,
+) -> dict[str, int]:
+    """Count subscription statuses for the selected trackers.
+
+    Navixy documents ``value`` as a map of tracker id to status. JSON
+    object keys arrive as strings. A key that is a device source id is
+    mapped back to the tracker id. ``normal`` is deliverable. The count
+    stays at the raw number of ``normal`` entries when none of the keys
+    match the subscription, so a reply that says every tracker is
+    normal is not treated as an empty set.
+    """
+
     counts = {name: 0 for name in _STATUS_NAMES}
+    value = _status_value(block)
+    if value is None:
+        return counts
+    matched: dict[str, set[int]] = {name: set() for name in _STATUS_NAMES}
+    unmatched = {name: 0 for name in _STATUS_NAMES}
+    saw_selected = False
+    for raw_id, status in value.items():
+        if not isinstance(status, str) or status not in matched:
+            continue
+        tracker_id = _reply_tracker_id(
+            raw_id,
+            tracker_ids,
+            source_to_tracker,
+        )
+        if tracker_id is None:
+            unmatched[status] += 1
+            continue
+        saw_selected = True
+        matched[status].add(tracker_id)
+    if saw_selected:
+        return {name: len(ids) for name, ids in matched.items()}
+    return unmatched
+
+
+def _status_value(block: object) -> dict[object, object] | None:
     if not isinstance(block, dict):
-        return counts
+        return None
     value = block.get("value")
-    if not isinstance(value, dict):
-        return counts
-    for status in value.values():
-        if isinstance(status, str) and status in counts:
-            counts[status] += 1
-    return counts
+    if isinstance(value, dict):
+        return value
+    if any(key in block for key in ("success", "type", "action")):
+        return None
+    if any(isinstance(item, str) and item in _STATUS_NAMES for item in block.values()):
+        return block
+    return None
+
+
+def _reply_tracker_id(
+    raw_id: object,
+    tracker_ids: set[int],
+    source_to_tracker: Mapping[int, int] | None,
+) -> int | None:
+    parsed = _reply_id(raw_id)
+    if parsed is None:
+        return None
+    if parsed in tracker_ids:
+        return parsed
+    if source_to_tracker is None:
+        return None
+    mapped = source_to_tracker.get(parsed)
+    if mapped in tracker_ids:
+        return mapped
+    return None
+
+
+def _reply_id(raw_id: object) -> int | None:
+    if isinstance(raw_id, bool):
+        return None
+    if isinstance(raw_id, int):
+        return raw_id
+    if isinstance(raw_id, str) and raw_id.strip():
+        try:
+            return int(raw_id.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _error_status(event: dict[str, Any]) -> tuple[object, str]:
@@ -538,7 +609,14 @@ class NavixySubscription:
             )
         data = event.get("data")
         block = data.get("state_batch") if isinstance(data, dict) else None
-        counts = _status_counts(block)
+        if not isinstance(block, dict) and isinstance(data, dict):
+            state = data.get("state")
+            block = state if isinstance(state, dict) else None
+        counts = _status_counts(
+            block,
+            self._tracker_ids,
+            self._source_to_tracker,
+        )
         self.subscription_counts = counts
         if isinstance(data, dict):
             readings = data.get("readings_batch")
@@ -546,8 +624,7 @@ class NavixySubscription:
                 logger.warning(
                     "Navixy readings_batch subscription was rejected"
                 )
-        success = isinstance(block, dict) and block.get("success") is True
-        if success and counts["normal"] > 0:
+        if counts["normal"] > 0:
             return
         logger.warning(
             "Navixy subscription has no deliverable trackers "
