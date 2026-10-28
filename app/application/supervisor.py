@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -83,6 +83,7 @@ class IngestionSupervisor:
             DEFAULT_DISCOVERY_BACKOFF_INITIAL_SECONDS
         ),
         discovery_backoff_cap: float = DEFAULT_DISCOVERY_BACKOFF_CAP_SECONDS,
+        seed_current_state: bool = True,
     ):
         self.reader = reader
         self.stream = stream
@@ -98,6 +99,7 @@ class IngestionSupervisor:
         self.discovery_interval_seconds = discovery_interval_seconds
         self._discovery_backoff_initial = discovery_backoff_initial
         self._discovery_backoff_cap = discovery_backoff_cap
+        self.seed_current_state = seed_current_state
         self._ordered_ids = tuple(dict.fromkeys(tracker_ids))
         self._scope = set(self._ordered_ids)
         self._uses_discovery = catalog is not None and not self._ordered_ids
@@ -308,10 +310,20 @@ class IngestionSupervisor:
     ) -> None:
         if not self._ordered_ids:
             raise _ScopeChanged()
-        session = await self.stream.connect(list(self._ordered_ids))
+        source_map = await self._load_source_map()
+        tracker_ids = list(self._ordered_ids)
+        if source_map is None:
+            session = await self.stream.connect(tracker_ids)
+        else:
+            session = await self.stream.connect(
+                tracker_ids,
+                source_to_tracker=source_map,
+            )
         try:
             if on_established is not None:
                 on_established()
+            if self.seed_current_state:
+                await self._seed_current()
             started = self.clock.monotonic()
             notified = False
             while True:
@@ -386,6 +398,10 @@ class IngestionSupervisor:
                 continue
             fresh = tuple(dict.fromkeys(ids))
             if fresh == self._ordered_ids:
+                logger.debug(
+                    "Navixy tracker list unchanged count=%s",
+                    len(fresh),
+                )
                 continue
             added = [tracker_id for tracker_id in fresh if tracker_id not in self._scope]
             removed = [
@@ -402,6 +418,77 @@ class IngestionSupervisor:
                 list(self._ordered_ids),
             )
             self._scope_changed.set()
+
+    async def _load_source_map(self) -> dict[int, int] | None:
+        """Return source id to tracker id, or None when unavailable.
+
+        None leaves websocket frames on the previous id rule. An empty
+        dict means the list was read and no source ids were present.
+        """
+
+        catalog = self._catalog
+        if catalog is None:
+            return None
+        load = getattr(catalog, "source_to_tracker", None)
+        if not callable(load):
+            return None
+        try:
+            loaded = load()
+            if isinstance(loaded, Awaitable):
+                loaded = await loaded
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Navixy source id map unavailable: %s", exc)
+            return None
+        if not isinstance(loaded, dict):
+            return {}
+        mapping: dict[int, int] = {}
+        for source_id, tracker_id in loaded.items():
+            if (
+                isinstance(source_id, int)
+                and not isinstance(source_id, bool)
+                and isinstance(tracker_id, int)
+                and not isinstance(tracker_id, bool)
+            ):
+                mapping[source_id] = tracker_id
+        return mapping
+
+    async def _seed_current(self) -> None:
+        """Publish the latest API state once for each selected tracker.
+
+        Navixy pushes a snapshot at subscribe and then only changes.
+        This read is the current fix, not a history backfill.
+        """
+
+        logger.info(
+            "Seeding current Navixy state tracker_count=%s",
+            len(self._ordered_ids),
+        )
+
+        async def one(tracker_id: int) -> TrackerPosition | None:
+            try:
+                return await self.reader.get_position(tracker_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Navixy current-state seed failed tracker_id=%s",
+                    tracker_id,
+                )
+                return None
+
+        positions = await asyncio.gather(
+            *(one(tracker_id) for tracker_id in self._ordered_ids)
+        )
+        for position in positions:
+            if position is None or position.tracker_id not in self._scope:
+                continue
+            await self._publish_isolated(
+                position,
+                "current-state seed",
+                "seed",
+            )
 
     async def _read_catalog(self) -> list[int]:
         catalog = self._catalog

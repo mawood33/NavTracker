@@ -6,7 +6,10 @@ from app.application.supervisor import IngestionSupervisor
 from app.domain.errors import TrackerDiscoveryError
 from app.infrastructure.config import load_settings
 from app.infrastructure.navixy_api import NavixyApiClient
-from app.infrastructure.navixy_parse import parse_tracker_list
+from app.infrastructure.navixy_parse import (
+    parse_tracker_list,
+    tracker_source_map,
+)
 
 from test_settings import _scrub
 
@@ -15,6 +18,37 @@ def test_parse_tracker_list_returns_ids_in_order():
     assert parse_tracker_list(
         {"success": True, "list": [{"id": 2}, {"id": 2}, {"id": 9}]}
     ) == [2, 9]
+
+
+def test_tracker_source_map_uses_source_id_not_tracker_id():
+    payload = {
+        "success": True,
+        "list": [
+            {"id": 1683373, "source": {"id": 10284}},
+            {"id": 1683374, "source": {"id": 10285}},
+            {"id": 9},
+            {"id": 10, "source": {"id": 10284}},
+        ],
+    }
+    assert tracker_source_map(payload) == {10284: 1683373, 10285: 1683374}
+    assert parse_tracker_list(payload) == [1683373, 1683374, 9, 10]
+
+
+def test_source_map_is_cached_from_the_tracker_list():
+    async def scenario():
+        stub = _StubHttp(
+            {
+                "success": True,
+                "list": [{"id": 7, "source": {"id": 70}}],
+            }
+        )
+        client = await _client(stub)
+        assert await client.list_tracker_ids() == [7]
+        assert await client.source_to_tracker() == {70: 7}
+        assert len(stub.calls) == 1
+        await client.close()
+
+    asyncio.run(scenario())
 
 
 def test_parse_tracker_list_allows_an_empty_list():

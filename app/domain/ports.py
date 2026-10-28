@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 from app.domain.entities import TrackerPosition
@@ -42,12 +42,18 @@ class PositionSubscription(Protocol):
 class PositionStream(Protocol):
     """Streaming port. Implementations subscribe only to the given ids."""
 
-    async def connect(self, tracker_ids: list[int]) -> PositionSubscription:
+    async def connect(
+        self,
+        tracker_ids: list[int],
+        source_to_tracker: Mapping[int, int] | None = None,
+    ) -> PositionSubscription:
         """Open a socket for tracker_ids.
 
-        Raises SourceConnectionError when the connection cannot be opened.
-        Raises ValueError when tracker_ids is empty so callers cannot fall
-        through to a subscription for every tracker.
+        ``source_to_tracker`` maps a websocket ``source_id`` to the tracker
+        id from ``tracker/list``. Raises SourceConnectionError when the
+        connection cannot be opened. Raises ValueError when tracker_ids is
+        empty so callers cannot fall through to a subscription for every
+        tracker.
         """
 
 

@@ -16,6 +16,7 @@ poll and websocket parsers share this rule. ``received_timestamp`` keeps
 the parsed value from before that conversion, including a naive timezone.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -48,7 +49,11 @@ def parse_poll_response(payload: Any, tracker_id: int) -> TrackerPosition:
     return position
 
 
-def parse_websocket_event(event: dict[str, Any]) -> list[TrackerPosition]:
+def parse_websocket_event(
+    event: dict[str, Any],
+    *,
+    source_to_tracker: Mapping[int, int] | None = None,
+) -> list[TrackerPosition]:
     """Parse one websocket event into zero or more current positions.
 
     Navixy documents ``type`` ``event`` with ``event`` ``state_batch``
@@ -65,7 +70,7 @@ def parse_websocket_event(event: dict[str, Any]) -> list[TrackerPosition]:
             data = event.get("data")
             if isinstance(data, dict):
                 source = data
-        position = parse_state(source)
+        position = parse_state(source, source_to_tracker=source_to_tracker)
         return [position] if position is not None else []
     if event_type == "state_batch":
         data = event.get("data")
@@ -75,7 +80,7 @@ def parse_websocket_event(event: dict[str, Any]) -> list[TrackerPosition]:
         for item in data:
             if not isinstance(item, dict):
                 continue
-            position = parse_state(item)
+            position = parse_state(item, source_to_tracker=source_to_tracker)
             if position is not None:
                 positions.append(position)
         return positions
@@ -102,6 +107,7 @@ def parse_state(
     state: dict[str, Any],
     *,
     tracker_id: int | None = None,
+    source_to_tracker: Mapping[int, int] | None = None,
 ) -> TrackerPosition | None:
     gps = state.get("gps")
     gps_dict = gps if isinstance(gps, dict) else {}
@@ -113,9 +119,11 @@ def parse_state(
     if latitude is None or longitude is None:
         return None
 
-    resolved_id = tracker_id
-    if resolved_id is None:
-        resolved_id = _tracker_id(state.get("tracker_id"), state.get("source_id"))
+    resolved_id = _state_tracker_id(
+        state,
+        tracker_id=tracker_id,
+        source_to_tracker=source_to_tracker,
+    )
     if resolved_id is None:
         return None
 
@@ -143,12 +151,31 @@ def parse_state(
     )
 
 
-def _tracker_id(*values: object) -> int | None:
-    for value in values:
-        parsed = _as_int(value)
-        if parsed is not None:
-            return parsed
-    return None
+def _state_tracker_id(
+    state: dict[str, Any],
+    *,
+    tracker_id: int | None,
+    source_to_tracker: Mapping[int, int] | None,
+) -> int | None:
+    """Prefer the requested tracker id, then a tracker id on the state.
+
+    Websocket states identify the device with ``source_id``. That value
+    is the source id from ``tracker/list``, not the tracker id. A supplied
+    map turns it back into the tracker id. Without a map, ``source_id``
+    is kept so older frames that used it as the tracker id still parse.
+    """
+
+    if tracker_id is not None:
+        return tracker_id
+    explicit = _as_int(state.get("tracker_id"))
+    if explicit is not None:
+        return explicit
+    source_id = _as_int(state.get("source_id"))
+    if source_id is None:
+        return None
+    if source_to_tracker is None:
+        return source_id
+    return source_to_tracker.get(source_id)
 
 
 def _as_int(value: object) -> int | None:
@@ -245,6 +272,37 @@ def parse_tracker_list(payload: object) -> list[int]:
             )
         ids.append(tracker_id)
     return list(dict.fromkeys(ids))
+
+
+def tracker_source_map(payload: object) -> dict[int, int]:
+    """Map ``source.id`` to tracker ``id`` from a ``tracker/list`` body.
+
+    Entries without an integer source id are omitted. The first tracker
+    id for a source id wins. This does not validate the list; callers
+    that need a hard failure use ``parse_tracker_list``.
+    """
+
+    if not isinstance(payload, dict):
+        return {}
+    raw = payload.get("list")
+    if not isinstance(raw, list):
+        return {}
+    mapping: dict[int, int] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        tracker_id = item.get("id")
+        source = item.get("source")
+        if isinstance(tracker_id, bool) or not isinstance(tracker_id, int):
+            continue
+        if not isinstance(source, dict):
+            continue
+        source_id = source.get("id")
+        if isinstance(source_id, bool) or not isinstance(source_id, int):
+            continue
+        if source_id not in mapping:
+            mapping[source_id] = tracker_id
+    return mapping
 
 
 def _text(value: object) -> str | None:

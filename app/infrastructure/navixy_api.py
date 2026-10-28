@@ -4,7 +4,11 @@ import httpx
 
 from app.domain.entities import TrackerPosition
 from app.domain.errors import TrackerDiscoveryError
-from app.infrastructure.navixy_parse import parse_poll_response, parse_tracker_list
+from app.infrastructure.navixy_parse import (
+    parse_poll_response,
+    parse_tracker_list,
+    tracker_source_map,
+)
 
 
 class NavixyApiClient:
@@ -16,6 +20,8 @@ class NavixyApiClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self._tracker_list_loaded = False
+        self._source_to_tracker: dict[int, int] = {}
         self.client = httpx.AsyncClient(
             timeout=timeout_seconds,
             headers={
@@ -56,4 +62,19 @@ class NavixyApiClient:
             raise TrackerDiscoveryError(
                 "Navixy tracker list request failed"
             ) from exc
-        return parse_tracker_list(payload)
+        ids = parse_tracker_list(payload)
+        self._source_to_tracker = tracker_source_map(payload)
+        self._tracker_list_loaded = True
+        return ids
+
+    async def source_to_tracker(self) -> dict[int, int]:
+        """Map websocket source ids to tracker ids.
+
+        Uses the last ``tracker/list`` body. Reads the list when this
+        process has not loaded one yet. The result does not change which
+        tracker ids are in scope.
+        """
+
+        if not self._tracker_list_loaded:
+            await self.list_tracker_ids()
+        return dict(self._source_to_tracker)

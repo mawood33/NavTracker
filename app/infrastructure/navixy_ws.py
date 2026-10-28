@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -16,7 +17,10 @@ from app.infrastructure.navixy_parse import parse_websocket_event
 logger = logging.getLogger(__name__)
 
 DEFAULT_IDLE_TIMEOUT_SECONDS = 5.0
+SUBSCRIPTION_REPLY_TIMEOUT_SECONDS = 30.0
+POSITION_STALL_SECONDS = 120.0
 _PREVIEW_LIMIT = 80
+_STATUS_NAMES = ("normal", "blocked", "unknown", "disallowed")
 
 # Navixy's documented client opens Atmosphere with tracking id 0, which
 # negotiates the handshake, and leaves message-length tracking off.
@@ -50,8 +54,17 @@ def build_subscribe_message(
         "action": "subscribe",
         "hash": api_key,
         "requests": [
-            {"type": "state_batch", "target": target()},
-            {"type": "readings_batch", "target": target()},
+            {
+                "type": "state_batch",
+                "target": target(),
+                "rate_limit": "5s",
+                "format": "full",
+            },
+            {
+                "type": "readings_batch",
+                "target": target(),
+                "rate_limit": "5s",
+            },
         ],
     }
 
@@ -151,6 +164,67 @@ def _classify(piece: str) -> tuple[str, dict[str, Any] | None]:
     return "event", event
 
 
+def _as_text(raw_message: object) -> str | None:
+    if isinstance(raw_message, bytes):
+        return raw_message.decode("utf-8", errors="replace")
+    if isinstance(raw_message, str):
+        return raw_message
+    return None
+
+
+def _event_name(event: dict[str, Any]) -> str:
+    if event.get("type") == "event":
+        name = event.get("event")
+        if isinstance(name, str) and name:
+            return name
+    event_type = event.get("type")
+    if isinstance(event_type, str) and event_type:
+        return event_type
+    return "unknown"
+
+
+def _source_ids(event: dict[str, Any]) -> list[int]:
+    data = event.get("data")
+    items = data if isinstance(data, list) else [data]
+    found: list[int] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source_id = item.get("source_id")
+        if isinstance(source_id, bool) or not isinstance(source_id, int):
+            continue
+        found.append(source_id)
+        if len(found) == 20:
+            break
+    return found
+
+
+def _status_counts(block: object) -> dict[str, int]:
+    counts = {name: 0 for name in _STATUS_NAMES}
+    if not isinstance(block, dict):
+        return counts
+    value = block.get("value")
+    if not isinstance(value, dict):
+        return counts
+    for status in value.values():
+        if isinstance(status, str) and status in counts:
+            counts[status] += 1
+    return counts
+
+
+def _error_status(event: dict[str, Any]) -> tuple[object, str]:
+    status = event.get("status")
+    if not isinstance(status, dict):
+        return None, ""
+    description = status.get("description")
+    if not isinstance(description, str):
+        description = ""
+    description = " ".join(description.split())
+    if len(description) > 120:
+        description = description[:120] + "..."
+    return status.get("code"), description
+
+
 def _preview(text: str) -> str:
     collapsed = " ".join(text.split())
     if len(collapsed) <= _PREVIEW_LIMIT:
@@ -191,7 +265,11 @@ class NavixyWebSocketClient:
         self.api_key = api_key
         self.idle_timeout = idle_timeout
 
-    async def connect(self, tracker_ids: list[int]) -> "NavixySubscription":
+    async def connect(
+        self,
+        tracker_ids: list[int],
+        source_to_tracker: Mapping[int, int] | None = None,
+    ) -> "NavixySubscription":
         if not tracker_ids:
             raise ValueError(
                 "tracker_ids is empty; refusing to subscribe to every "
@@ -219,6 +297,7 @@ class NavixyWebSocketClient:
             set(tracker_ids),
             idle_timeout=self.idle_timeout,
             ws_url=self.ws_url,
+            source_to_tracker=source_to_tracker,
         )
         try:
             await socket.send(
@@ -226,6 +305,7 @@ class NavixyWebSocketClient:
                     build_subscribe_message(self.api_key, tracker_ids)
                 )
             )
+            await subscription.read_subscription_reply()
         except asyncio.CancelledError:
             await subscription.close()
             raise
@@ -241,9 +321,15 @@ class NavixyWebSocketClient:
                 f"Navixy websocket subscribe failed: {exc}"
             ) from exc
 
+        counts = subscription.subscription_counts
         logger.info(
-            "Subscribed to Navixy websocket for tracker_ids=%s",
+            "Subscribed to Navixy websocket for tracker_ids=%s "
+            "normal=%s blocked=%s unknown=%s disallowed=%s",
             list(tracker_ids),
+            counts["normal"],
+            counts["blocked"],
+            counts["unknown"],
+            counts["disallowed"],
         )
         return subscription
 
@@ -255,30 +341,101 @@ class NavixySubscription:
         tracker_ids: set[int],
         idle_timeout: float,
         ws_url: str = "",
+        source_to_tracker: Mapping[int, int] | None = None,
+        reply_timeout: float = SUBSCRIPTION_REPLY_TIMEOUT_SECONDS,
+        position_stall_seconds: float = POSITION_STALL_SECONDS,
     ):
         self._socket = socket
         self._tracker_ids = tracker_ids
         self._idle_timeout = idle_timeout
         self._ws_url = ws_url
+        self._source_to_tracker = (
+            None
+            if source_to_tracker is None
+            else dict(source_to_tracker)
+        )
+        self._reply_timeout = reply_timeout
+        self._stall_seconds = position_stall_seconds
         self._pending: asyncio.Task[Any] | None = None
         self._queued: list[TrackerPosition] = []
         self._pending_events: list[dict[str, Any]] = []
+        self._event_counts: dict[str, int] = {}
+        self._opened_at = time.monotonic()
+        self._last_position_at: float | None = None
+        self._quiet_warned = False
         self.last_alive = 0.0
+        self.subscription_counts = {name: 0 for name in _STATUS_NAMES}
+
+    async def read_subscription_reply(self) -> None:
+        """Read until Navixy accepts the subscribe action.
+
+        Heartbeats and the Atmosphere handshake may arrive first. A
+        state event that arrives before the reply is kept for
+        ``receive``. The reply itself is logged by the caller.
+        """
+
+        deadline = time.monotonic() + self._reply_timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SourceConnectionError(
+                    "Navixy subscription reply timed out"
+                )
+            try:
+                raw_message = await asyncio.wait_for(
+                    self._socket.recv(),
+                    remaining,
+                )
+            except TimeoutError as exc:
+                raise SourceConnectionError(
+                    "Navixy subscription reply timed out"
+                ) from exc
+            reply = self._take_reply(raw_message)
+            if reply is None:
+                continue
+            self._accept_reply(reply)
+            self._opened_at = time.monotonic()
+            self._last_position_at = None
+            self._quiet_warned = False
+            return
 
     async def receive(self) -> TrackerPosition | None:
         if self._queued:
+            self._note_position()
             return self._queued.pop(0)
+        if not self._pending_events:
+            self._raise_if_stalled()
         event = await self._next_event()
         if event is None:
             return None
+        parsed = parse_websocket_event(
+            event,
+            source_to_tracker=self._source_to_tracker,
+        )
         positions = [
             position
-            for position in parse_websocket_event(event)
+            for position in parsed
             if position.tracker_id in self._tracker_ids
         ]
+        dropped = len(parsed) - len(positions)
+        kind = _event_name(event)
+        if kind in {"state", "state_batch"} and not positions:
+            logger.warning(
+                "Dropping Navixy %s frame with no in-scope position "
+                "source_ids=%s",
+                kind,
+                _source_ids(event),
+            )
+        elif dropped:
+            logger.warning(
+                "Dropping Navixy websocket positions outside "
+                "subscription count=%s",
+                dropped,
+            )
         if not positions:
             return None
         self._queued.extend(positions[1:])
+        self._note_position()
         return positions[0]
 
     async def _next_event(self) -> dict[str, Any] | None:
@@ -331,8 +488,127 @@ class NavixySubscription:
             )
         if not frame.events:
             return None
+        for event in frame.events:
+            self._note_event(_event_name(event))
         self._pending_events.extend(frame.events[1:])
         return frame.events[0]
+
+    def _take_reply(self, raw_message: object) -> dict[str, Any] | None:
+        text = _as_text(raw_message)
+        if text is None:
+            logger.warning(
+                "Ignoring unparseable Navixy websocket frame preview=%s",
+                _preview(str(raw_message)),
+            )
+            return None
+        frame = inspect_navixy_frame(text)
+        if frame.alive:
+            self.last_alive = time.monotonic()
+        reply: dict[str, Any] | None = None
+        for event in frame.events:
+            if event.get("type") in {"response", "error"}:
+                reply = event
+                continue
+            self._pending_events.append(event)
+            self._note_event(_event_name(event))
+        for preview in frame.unparseable:
+            logger.warning(
+                "Ignoring unparseable Navixy websocket frame preview=%s",
+                preview,
+            )
+        if reply is not None:
+            return reply
+        if frame.handshake:
+            logger.debug("Navixy websocket Atmosphere handshake")
+        elif frame.heartbeat:
+            logger.debug("Navixy websocket heartbeat")
+        return None
+
+    def _accept_reply(self, event: dict[str, Any]) -> None:
+        if event.get("type") == "error":
+            code, description = _error_status(event)
+            logger.warning(
+                "Navixy subscription rejected code=%s description=%s",
+                code,
+                description,
+            )
+            raise SourceConnectionError(
+                "Navixy subscription rejected "
+                f"code={code} description={description}"
+            )
+        data = event.get("data")
+        block = data.get("state_batch") if isinstance(data, dict) else None
+        counts = _status_counts(block)
+        self.subscription_counts = counts
+        if isinstance(data, dict):
+            readings = data.get("readings_batch")
+            if isinstance(readings, dict) and readings.get("success") is False:
+                logger.warning(
+                    "Navixy readings_batch subscription was rejected"
+                )
+        success = isinstance(block, dict) and block.get("success") is True
+        if success and counts["normal"] > 0:
+            return
+        logger.warning(
+            "Navixy subscription has no deliverable trackers "
+            "normal=%s blocked=%s unknown=%s disallowed=%s",
+            counts["normal"],
+            counts["blocked"],
+            counts["unknown"],
+            counts["disallowed"],
+        )
+        raise SourceConnectionError(
+            "Navixy subscription has no deliverable trackers "
+            f"normal={counts['normal']} blocked={counts['blocked']} "
+            f"unknown={counts['unknown']} "
+            f"disallowed={counts['disallowed']}"
+        )
+
+    def _note_event(self, kind: str) -> None:
+        count = self._event_counts.get(kind, 0) + 1
+        self._event_counts[kind] = count
+        if count == 1:
+            logger.info(
+                "Navixy websocket event type=%s count=%s",
+                kind,
+                count,
+            )
+            return
+        logger.debug(
+            "Navixy websocket event type=%s count=%s",
+            kind,
+            count,
+        )
+
+    def _note_position(self) -> None:
+        self._last_position_at = time.monotonic()
+        self._quiet_warned = False
+
+    def _raise_if_stalled(self) -> None:
+        now = time.monotonic()
+        anchor = self._opened_at
+        if self._last_position_at is not None:
+            anchor = self._last_position_at
+        if now - anchor < self._stall_seconds:
+            return
+        if self._last_position_at is None:
+            logger.warning(
+                "Navixy websocket has no positions after %.0fs events=%s",
+                self._stall_seconds,
+                dict(self._event_counts),
+            )
+            raise SourceConnectionError(
+                "Navixy websocket produced no positions for "
+                f"{self._stall_seconds:.0f}s"
+            )
+        if self._quiet_warned:
+            return
+        self._quiet_warned = True
+        logger.warning(
+            "Navixy websocket has no positions for %.0fs events=%s",
+            self._stall_seconds,
+            dict(self._event_counts),
+        )
 
     async def close(self) -> None:
         pending = self._pending

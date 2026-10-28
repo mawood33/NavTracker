@@ -3,8 +3,11 @@ import json
 import logging
 from urllib.parse import parse_qsl, urlsplit
 
+import pytest
+from app.domain.errors import SourceConnectionError
 from app.infrastructure.navixy_ws import (
     NavixySubscription,
+    NavixyWebSocketClient,
     inspect_navixy_frame,
     with_atmosphere_tracking,
 )
@@ -202,3 +205,207 @@ def test_truncated_and_unknown_frames_warn_with_a_short_preview(caplog):
     )
     assert "SECRET-TAIL" not in caplog.text
     assert "..." in warnings[1]
+
+
+def _reply(value):
+    return json.dumps(
+        {
+            "type": "response",
+            "action": "subscription/subscribe",
+            "events": ["state_batch"],
+            "data": {
+                "state_batch": {"success": True, "value": value},
+            },
+        }
+    )
+
+
+def test_subscription_reply_is_logged_and_a_leading_state_is_kept(caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    body = json.dumps(
+        {
+            "type": "event",
+            "event": "state_batch",
+            "data": [
+                {
+                    "source_id": 10284,
+                    "gps": {
+                        "updated": "2026-01-01T00:00:00Z",
+                        "location": {"lat": 4, "lng": 5},
+                    },
+                }
+            ],
+        }
+    )
+    frames = [
+        "b623a15d-9623-4fd8-a9d3-697036635c29|30000|X|",
+        f"{len(body)}|{body}",
+        _reply({"3": "normal", "9": "blocked"}),
+    ]
+
+    class Socket:
+        async def send(self, data):
+            self.sent = json.loads(data)
+
+        async def recv(self):
+            if not frames:
+                await asyncio.Event().wait()
+            return frames.pop(0)
+
+        async def close(self):
+            return None
+
+    socket = Socket()
+
+    async def fake_connect(url):
+        return socket
+
+    monkeypatch.setattr(
+        "app.infrastructure.navixy_ws.websockets.connect",
+        fake_connect,
+    )
+    client = NavixyWebSocketClient(
+        "wss://ws.navixy.com/events",
+        "secret-hash",
+    )
+
+    async def run():
+        subscription = await client.connect(
+            [3],
+            source_to_tracker={10284: 3},
+        )
+        position = await subscription.receive()
+        await subscription.close()
+        return position
+
+    position = asyncio.run(run())
+    assert position is not None
+    assert position.tracker_id == 3
+    assert socket.sent["requests"][0]["format"] == "full"
+    assert socket.sent["requests"][0]["target"]["type"] == "selected"
+    assert "normal=1" in caplog.text
+    assert "blocked=1" in caplog.text
+    assert "Navixy websocket event type=state_batch count=1" in caplog.text
+    assert "secret-hash" not in caplog.text
+
+
+def test_subscription_error_fails_without_logging_the_hash(caplog, monkeypatch):
+    caplog.set_level(logging.WARNING)
+
+    class Socket:
+        async def send(self, data):
+            return None
+
+        async def recv(self):
+            return json.dumps(
+                {
+                    "type": "error",
+                    "action": "subscription/subscribe",
+                    "status": {"code": 3, "description": "Wrong hash"},
+                    "data": {"hash": "secret-hash"},
+                }
+            )
+
+        async def close(self):
+            return None
+
+    async def fake_connect(url):
+        return Socket()
+
+    monkeypatch.setattr(
+        "app.infrastructure.navixy_ws.websockets.connect",
+        fake_connect,
+    )
+    client = NavixyWebSocketClient("wss://ws.navixy.com/events", "secret-hash")
+    with pytest.raises(SourceConnectionError, match="code=3"):
+        asyncio.run(client.connect([3]))
+    assert "secret-hash" not in caplog.text
+    assert "Wrong hash" in caplog.text
+
+
+def test_source_id_maps_to_the_tracker_and_unmapped_frames_are_dropped(caplog):
+    caplog.set_level(logging.WARNING)
+    body = json.dumps(
+        {
+            "type": "event",
+            "event": "state_batch",
+            "data": [
+                {
+                    "source_id": 10284,
+                    "gps": {"location": {"lat": 4, "lng": 5}},
+                }
+            ],
+        }
+    )
+    prefixed = f"{len(body)}|{body}"
+    found, _alive = asyncio.run(
+        _receive_mapped([prefixed], {3}, {10284: 3})
+    )
+    assert found[0] is not None
+    assert found[0].tracker_id == 3
+
+    missed, _alive = asyncio.run(_receive_mapped([prefixed], {3}, {}))
+    assert missed[0] is None
+    assert "no in-scope position" in caplog.text
+    assert "source_ids=[10284]" in caplog.text
+
+
+def test_heartbeat_only_socket_fails_after_the_stall_window():
+    subscription = NavixySubscription(
+        _Socket(["X", "X"]),
+        {1},
+        idle_timeout=0.01,
+        position_stall_seconds=0.05,
+    )
+
+    async def run():
+        first = await subscription.receive()
+        await asyncio.sleep(0.06)
+        with pytest.raises(SourceConnectionError, match="no positions"):
+            await subscription.receive()
+        await subscription.close()
+        return first
+
+    assert asyncio.run(run()) is None
+
+
+def test_quiet_socket_warns_after_a_position_and_stays_open(caplog):
+    caplog.set_level(logging.WARNING)
+    subscription = NavixySubscription(
+        _Socket([_position(1), "X", "X"]),
+        {1},
+        idle_timeout=0.01,
+        position_stall_seconds=0.05,
+    )
+
+    async def run():
+        first = await subscription.receive()
+        await asyncio.sleep(0.06)
+        second = await subscription.receive()
+        third = await subscription.receive()
+        await subscription.close()
+        return first, second, third
+
+    first, second, third = asyncio.run(run())
+    assert first is not None and first.tracker_id == 1
+    assert second is None
+    assert third is None
+    assert caplog.text.count("has no positions for") == 1
+    assert "produced no positions" not in caplog.text
+
+
+async def _receive_mapped(frames, tracker_ids, source_map):
+    subscription = NavixySubscription(
+        _Socket(frames),
+        set(tracker_ids),
+        idle_timeout=1,
+        source_to_tracker=source_map,
+    )
+    found = []
+    try:
+        for _ in range(len(frames)):
+            found.append(await subscription.receive())
+        alive = subscription.last_alive
+    finally:
+        await subscription.close()
+    return found, alive

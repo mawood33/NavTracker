@@ -167,6 +167,7 @@ def _supervisor(**kwargs):
         poll_interval_seconds=0,
         policy=_policy(),
         clock=FakeClock(),
+        seed_current_state=False,
     )
     defaults.update(kwargs)
     return IngestionSupervisor(**defaults)
@@ -852,6 +853,98 @@ def test_rediscovery_adds_a_tracker_for_polling(caplog):
         assert "re-discovery failed" in caplog.text
         assert "keeping tracker_ids=[1]" in caplog.text
         assert "added=[2]" in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_websocket_seeds_the_current_state_once():
+    async def scenario():
+        parked = asyncio.Event()
+        reader = RecordingReader(
+            lambda tracker_id: _position(tracker_id, T1, latitude=tracker_id)
+        )
+        session = ScriptedSession([], parked=parked)
+        stream = ScriptedStream([session])
+        publisher = FakePublisher()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[4, 5],
+            seed_current_state=True,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await asyncio.wait_for(parked.wait(), timeout=1)
+        assert reader.ids == [4, 5]
+        assert [item.tracker_id for item in publisher.published] == [4, 5]
+        assert session.closed is False
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_websocket_passes_source_ids_through_to_the_socket():
+    async def scenario():
+        parked = asyncio.Event()
+
+        class MappingCatalog:
+            async def source_to_tracker(self):
+                return {99: 4}
+
+        class RememberStream:
+            def __init__(self):
+                self.maps = []
+
+            async def connect(self, tracker_ids, source_to_tracker=None):
+                self.maps.append((list(tracker_ids), dict(source_to_tracker or {})))
+                return ScriptedSession([], parked=parked)
+
+        stream = RememberStream()
+        supervisor = _supervisor(
+            reader=RecordingReader(lambda tracker_id: _position(tracker_id, T1)),
+            stream=stream,
+            tracker_ids=[4],
+            catalog=MappingCatalog(),
+        )
+        task = asyncio.create_task(supervisor.run())
+        await asyncio.wait_for(parked.wait(), timeout=1)
+        assert stream.maps == [([4], {99: 4})]
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_source_map_failure_keeps_the_socket_on_the_configured_ids(caplog):
+    async def scenario():
+        caplog.set_level(logging.WARNING)
+        parked = asyncio.Event()
+
+        class BoomMap:
+            async def source_to_tracker(self):
+                raise TrackerDiscoveryError(
+                    "Navixy tracker list request failed"
+                )
+
+        class OneArgStream:
+            def __init__(self):
+                self.requested = []
+
+            async def connect(self, tracker_ids):
+                self.requested.append(list(tracker_ids))
+                return ScriptedSession([], parked=parked)
+
+        stream = OneArgStream()
+        supervisor = _supervisor(
+            reader=RecordingReader(lambda tracker_id: _position(tracker_id, T1)),
+            stream=stream,
+            tracker_ids=[4],
+            catalog=BoomMap(),
+        )
+        task = asyncio.create_task(supervisor.run())
+        await asyncio.wait_for(parked.wait(), timeout=1)
+        assert stream.requested == [[4]]
+        assert "source id map unavailable" in caplog.text
         await _shutdown(task)
 
     asyncio.run(scenario())
