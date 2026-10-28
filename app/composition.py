@@ -72,6 +72,7 @@ def build_application(settings: Settings) -> Application:
         discovery_interval_seconds=(
             settings.tracker_discovery_interval_seconds
         ),
+        account_timezone=settings.navixy_timezone,
     )
     return Application(
         crypto_handler=crypto_handler,

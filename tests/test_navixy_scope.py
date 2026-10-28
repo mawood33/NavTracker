@@ -17,12 +17,17 @@ def test_subscribe_message_selects_tracker_ids_only():
 
     assert message["action"] == "subscribe"
     assert message["hash"] == "hash-1"
+    assert message["iso_datetime"] is True
     assert "trackers" not in message
     assert message["requests"][0]["target"] == {
         "type": "selected",
         "tracker_ids": [9, 8],
     }
+    assert message["requests"][0]["rate_limit"] == "5s"
+    assert message["requests"][0]["format"] == "full"
     assert message["requests"][1]["type"] == "readings_batch"
+    assert message["requests"][1]["rate_limit"] == "5s"
+    assert "format" not in message["requests"][1]
     assert message["requests"][1]["target"] == {
         "type": "selected",
         "tracker_ids": [9, 8],
@@ -124,6 +129,21 @@ def test_connect_sends_selected_subscription(monkeypatch):
         async def send(self, data):
             sent.append(json.loads(data))
 
+        async def recv(self):
+            return json.dumps(
+                {
+                    "type": "response",
+                    "action": "subscription/subscribe",
+                    "events": ["state_batch", "readings_batch"],
+                    "data": {
+                        "state_batch": {
+                            "success": True,
+                            "value": {"4": "normal", "5": "normal"},
+                        }
+                    },
+                }
+            )
+
         async def close(self):
             self.closed = True
 
@@ -154,6 +174,7 @@ def test_connect_sends_selected_subscription(monkeypatch):
     assert query["X-Atmosphere-Transport"] == "websocket"
     assert query["Content-Type"] == "application/json"
     assert query["X-atmo-protocol"] == "true"
+    assert query["iso_datetime"] == "true"
     assert "X-Atmosphere-TrackMessageSize" not in query
     assert "hash-1" not in seen[0]
     assert sent[0]["requests"][0]["target"]["type"] == "selected"

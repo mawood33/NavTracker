@@ -168,14 +168,14 @@ def test_position_lines_go_to_the_file_and_stdout(
         assert "raw_timestamp=2026-01-01T00:00:00" in sink
         assert "raw_type=datetime" in sink
         assert "raw_tzinfo=None" in sink
-        assert "normalized_utc=2026-01-01T00:00:00+00:00" in sink
+        assert "normalized_utc=2026-01-01T00:00:00Z" in sink
         assert "latitude=10.5" in sink
         assert "longitude=-20.25" in sink
         assert "speed=1.5" in sink
         assert "heading=90.0" in sink
         assert "previous_type=datetime" in sink
         assert "previous_tzinfo=None" in sink
-        assert "previous_utc=2026-01-01T00:00:00+00:00" in sink
+        assert "previous_utc=2026-01-01T00:00:00Z" in sink
         assert "decision=publish" in sink
         assert "super-secret-api-key" not in sink
 

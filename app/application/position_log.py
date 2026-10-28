@@ -11,7 +11,7 @@ from datetime import datetime
 
 from app.domain.entities import TrackerPosition
 from navtracker_common.logging_setup import POSITIONS_LOGGER, position_logging
-from navtracker_common.timeutil import ensure_utc
+from navtracker_common.timeutil import ensure_utc, format_zulu
 
 positions = logging.getLogger(POSITIONS_LOGGER)
 
@@ -62,7 +62,9 @@ def _as_utc(moment: datetime) -> datetime:
 def _rendered(value: datetime | None) -> str:
     if value is None:
         return "None"
-    return value.isoformat()
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.isoformat()
+    return format_zulu(value)
 
 
 def _type_name(value: object) -> str:

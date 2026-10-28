@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC
 
 import httpx
 import pytest
@@ -6,8 +7,12 @@ from app.application.supervisor import IngestionSupervisor
 from app.domain.errors import TrackerDiscoveryError
 from app.infrastructure.config import load_settings
 from app.infrastructure.navixy_api import NavixyApiClient
-from app.infrastructure.navixy_parse import parse_tracker_list
+from app.infrastructure.navixy_parse import (
+    parse_tracker_list,
+    tracker_source_map,
+)
 
+from navtracker_common.timeutil import account_timezone, set_account_timezone
 from test_settings import _scrub
 
 
@@ -15,6 +20,37 @@ def test_parse_tracker_list_returns_ids_in_order():
     assert parse_tracker_list(
         {"success": True, "list": [{"id": 2}, {"id": 2}, {"id": 9}]}
     ) == [2, 9]
+
+
+def test_tracker_source_map_uses_source_id_not_tracker_id():
+    payload = {
+        "success": True,
+        "list": [
+            {"id": 1683373, "source": {"id": 10284}},
+            {"id": 1683374, "source": {"id": 10285}},
+            {"id": 9},
+            {"id": 10, "source": {"id": 10284}},
+        ],
+    }
+    assert tracker_source_map(payload) == {10284: 1683373, 10285: 1683374}
+    assert parse_tracker_list(payload) == [1683373, 1683374, 9, 10]
+
+
+def test_source_map_is_cached_from_the_tracker_list():
+    async def scenario():
+        stub = _StubHttp(
+            {
+                "success": True,
+                "list": [{"id": 7, "source": {"id": 70}}],
+            }
+        )
+        client = await _client(stub)
+        assert await client.list_tracker_ids() == [7]
+        assert await client.source_to_tracker() == {70: 7}
+        assert len(stub.calls) == 1
+        await client.close()
+
+    asyncio.run(scenario())
 
 
 def test_parse_tracker_list_allows_an_empty_list():
@@ -91,9 +127,36 @@ def test_list_tracker_ids_posts_the_tracker_list_endpoint():
         assert stub.calls == [
             (
                 "https://api.example/v2/tracker/list",
-                {"hash": "secret-hash"},
+                {"hash": "secret-hash", "iso_datetime": True},
             )
         ]
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_navixy_requests_ask_for_iso_datetimes_and_cache_the_account_zone():
+    async def scenario():
+        client = NavixyApiClient("https://api.example/v2", "secret-hash")
+        assert client.client.headers["NVX-ISO-DateTime"] == "true"
+        await client.client.aclose()
+        stub = _StubHttp(
+            {
+                "success": True,
+                "user_info": {"time_zone": "Asia/Seoul", "login": "secret-user"},
+            }
+        )
+        client.client = stub
+        assert await client.load_account_timezone() == "Asia/Seoul"
+        assert await client.load_account_timezone() == "Asia/Seoul"
+        assert stub.calls == [
+            (
+                "https://api.example/v2/user/get_info",
+                {"hash": "secret-hash", "iso_datetime": True},
+            )
+        ]
+        assert str(account_timezone()) == "Asia/Seoul"
+        set_account_timezone(UTC)
         await client.close()
 
     asyncio.run(scenario())

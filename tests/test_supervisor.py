@@ -167,6 +167,7 @@ def _supervisor(**kwargs):
         poll_interval_seconds=0,
         policy=_policy(),
         clock=FakeClock(),
+        seed_current_state=False,
     )
     defaults.update(kwargs)
     return IngestionSupervisor(**defaults)
@@ -478,7 +479,7 @@ def test_dedupes_tracker_id_and_timestamp_across_failover(caplog):
         assert [item.timestamp for item in publisher.published] == [T1, T2]
         assert clock.now_calls == 0
         assert "Polling resumes from last received fix" in caplog.text
-        assert T1.isoformat() in caplog.text
+        assert "2026-01-01T00:00:00Z" in caplog.text
         await _shutdown(task)
 
     asyncio.run(scenario())
@@ -533,7 +534,7 @@ def test_mixed_naive_and_aware_timestamps_dedupe_across_failover(caplog):
         assert "raw_tzinfo=None" in text
         assert "raw_tzinfo=UTC" in text
         assert "raw_tzinfo=UTC+02:00" in text
-        assert "normalized_utc=2026-01-01T00:00:00+00:00" in text
+        assert "normalized_utc=2026-01-01T00:00:00Z" in text
         assert "previous_tzinfo=None" in text
         assert "decision=publish" in text
         assert "decision=duplicate" in text
@@ -589,11 +590,11 @@ def test_position_log_shows_a_naive_cursor_before_publish(caplog):
         text = caplog.text
         assert (
             "previous_type=datetime previous_tzinfo=None "
-            "previous_utc=2026-01-01T00:00:00+00:00 decision=publish"
+            "previous_utc=2026-01-01T00:00:00Z decision=publish"
         ) in text
         assert "source=poll" in text
         assert "raw_tzinfo=None" in text
-        assert "normalized_utc=2026-01-01T00:00:00+00:00" in text
+        assert "normalized_utc=2026-01-01T00:00:00Z" in text
         assert "latitude=10.5" in text
         assert "longitude=-20.25" in text
         assert "speed=1.5" in text
@@ -852,6 +853,118 @@ def test_rediscovery_adds_a_tracker_for_polling(caplog):
         assert "re-discovery failed" in caplog.text
         assert "keeping tracker_ids=[1]" in caplog.text
         assert "added=[2]" in caplog.text
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_startup_logs_the_account_timezone_from_user_info(caplog):
+    async def scenario():
+        caplog.set_level(logging.INFO)
+
+        class ZoneReader:
+            async def load_account_timezone(self):
+                return "Asia/Seoul"
+
+        supervisor = _supervisor(
+            reader=ZoneReader(),
+            stream=ExplodingStream(),
+            tracker_ids=[1],
+            mode=IngestionMode.POLL,
+        )
+        await supervisor._prepare_account_timezone()
+
+    asyncio.run(scenario())
+    assert "Navixy account timezone=Asia/Seoul source=user/get_info" in caplog.text
+
+
+def test_websocket_seeds_the_current_state_once():
+    async def scenario():
+        parked = asyncio.Event()
+        reader = RecordingReader(
+            lambda tracker_id: _position(tracker_id, T1, latitude=tracker_id)
+        )
+        session = ScriptedSession([], parked=parked)
+        stream = ScriptedStream([session])
+        publisher = FakePublisher()
+        supervisor = _supervisor(
+            reader=reader,
+            stream=stream,
+            publisher=publisher,
+            tracker_ids=[4, 5],
+            seed_current_state=True,
+        )
+        task = asyncio.create_task(supervisor.run())
+        await asyncio.wait_for(parked.wait(), timeout=1)
+        assert reader.ids == [4, 5]
+        assert [item.tracker_id for item in publisher.published] == [4, 5]
+        assert session.closed is False
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_websocket_passes_source_ids_through_to_the_socket():
+    async def scenario():
+        parked = asyncio.Event()
+
+        class MappingCatalog:
+            async def source_to_tracker(self):
+                return {99: 4}
+
+        class RememberStream:
+            def __init__(self):
+                self.maps = []
+
+            async def connect(self, tracker_ids, source_to_tracker=None):
+                self.maps.append((list(tracker_ids), dict(source_to_tracker or {})))
+                return ScriptedSession([], parked=parked)
+
+        stream = RememberStream()
+        supervisor = _supervisor(
+            reader=RecordingReader(lambda tracker_id: _position(tracker_id, T1)),
+            stream=stream,
+            tracker_ids=[4],
+            catalog=MappingCatalog(),
+        )
+        task = asyncio.create_task(supervisor.run())
+        await asyncio.wait_for(parked.wait(), timeout=1)
+        assert stream.maps == [([4], {99: 4})]
+        await _shutdown(task)
+
+    asyncio.run(scenario())
+
+
+def test_source_map_failure_keeps_the_socket_on_the_configured_ids(caplog):
+    async def scenario():
+        caplog.set_level(logging.WARNING)
+        parked = asyncio.Event()
+
+        class BoomMap:
+            async def source_to_tracker(self):
+                raise TrackerDiscoveryError(
+                    "Navixy tracker list request failed"
+                )
+
+        class OneArgStream:
+            def __init__(self):
+                self.requested = []
+
+            async def connect(self, tracker_ids):
+                self.requested.append(list(tracker_ids))
+                return ScriptedSession([], parked=parked)
+
+        stream = OneArgStream()
+        supervisor = _supervisor(
+            reader=RecordingReader(lambda tracker_id: _position(tracker_id, T1)),
+            stream=stream,
+            tracker_ids=[4],
+            catalog=BoomMap(),
+        )
+        task = asyncio.create_task(supervisor.run())
+        await asyncio.wait_for(parked.wait(), timeout=1)
+        assert stream.requested == [[4]]
+        assert "source id map unavailable" in caplog.text
         await _shutdown(task)
 
     asyncio.run(scenario())

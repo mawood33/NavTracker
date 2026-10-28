@@ -23,6 +23,7 @@ from analytics.domain.reports import (
 )
 from analytics.domain.timeutil import ensure_utc
 from analytics.domain.tracks import dedupe_fixes
+from navtracker_common.timeutil import format_zulu
 
 
 class AnalysisService:
@@ -122,7 +123,7 @@ def _activity_document(activity: Activity) -> dict[str, object]:
         "latitude": activity.latitude,
         "longitude": activity.longitude,
         "acceptance": activity.acceptance,
-        "updated_at": activity.updated_at.isoformat(),
+        "updated_at": format_zulu(activity.updated_at),
         "site_type": state_site_type(activity.state),
         "source_ids": list(activity.source_ids),
     }

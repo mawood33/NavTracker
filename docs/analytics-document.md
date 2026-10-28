@@ -175,7 +175,7 @@ The snapshot field is `tracks`. Each fix is:
 | --- | --- |
 | `vehicle_id` | Vehicle identifier |
 | `lat`, `lon` | Decimal degrees |
-| `timestamp` | ISO-8601 |
+| `timestamp` | UTC `YYYY-MM-DDTHH:MM:SSZ` |
 | `speed` | Meters per second, or null |
 | `heading` | Degrees, or null |
 | `origin_id` | Chat message id when the fix came from chat |

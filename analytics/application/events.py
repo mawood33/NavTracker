@@ -4,6 +4,7 @@ from datetime import datetime
 
 from analytics.domain.aoi import AreaOfInterest
 from analytics.domain.behavior import Mill, Slowdown, Stop
+from navtracker_common.timeutil import format_zulu
 
 
 def event_document(
@@ -77,4 +78,4 @@ def _mill(item: Mill) -> dict[str, object]:
 
 
 def _iso(value: datetime) -> str:
-    return value.isoformat()
+    return format_zulu(value)

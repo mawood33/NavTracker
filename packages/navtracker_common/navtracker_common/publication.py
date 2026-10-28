@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from navtracker_common.timeutil import format_zulu
+
 # Bump when the JSON keys or their meaning change. Consumers can branch
 # on this field. Version 1 keeps every key, with null for an unknown value.
 SCHEMA_VERSION = 1
@@ -29,7 +31,7 @@ class OutboundMessage:
             "latitude": self.latitude,
             "longitude": self.longitude,
             "timestamp": (
-                self.timestamp.isoformat()
+                format_zulu(self.timestamp)
                 if self.timestamp is not None
                 else None
             ),
