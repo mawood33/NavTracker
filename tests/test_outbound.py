@@ -29,7 +29,7 @@ def test_outbound_message_is_versioned_and_not_the_domain_object():
         "tracker_id": 4,
         "latitude": 1.5,
         "longitude": 2.5,
-        "timestamp": "2026-01-01T00:00:00+00:00",
+        "timestamp": "2026-01-01T00:00:00Z",
         "speed": 0.0,
         "heading": 180.0,
         "altitude": 12.0,

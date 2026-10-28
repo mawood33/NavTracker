@@ -1,11 +1,18 @@
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
+from app.application.messages import to_outbound_message
 from app.domain.entities import TrackerPosition
 from app.infrastructure.navixy_parse import (
     parse_poll_response,
     parse_state,
     parse_websocket_event,
+)
+
+from navtracker_common.timeutil import (
+    format_zulu,
+    set_account_timezone,
 )
 
 WHEN = datetime(2026, 1, 1, tzinfo=UTC)
@@ -174,6 +181,62 @@ def test_poll_and_websocket_timestamps_are_utc(text: str) -> None:
         assert polled.received_timestamp.tzinfo is None
     assert streamed[0].received_timestamp == polled.received_timestamp
     assert batch[0].received_timestamp == polled.received_timestamp
+
+
+def test_account_timezone_converts_naive_and_offset_times_to_zulu():
+    set_account_timezone(ZoneInfo("Asia/Seoul"))
+    try:
+        naive = parse_websocket_event(
+            {
+                "tracker_id": 1,
+                "lat": 37.5,
+                "lng": 127.0,
+                "timestamp": "2026-10-28 14:50:12",
+            }
+        )[0]
+        offset = parse_poll_response(
+            {
+                "success": True,
+                "state": {
+                    "gps": {
+                        "updated": "2026-10-28T14:50:12+09:00",
+                        "location": {"lat": 37.5, "lng": 127.0},
+                    }
+                },
+            },
+            1,
+        )
+        already = parse_websocket_event(
+            {
+                "tracker_id": 1,
+                "lat": 37.5,
+                "lng": 127.0,
+                "timestamp": "2026-10-28T05:50:12Z",
+            }
+        )[0]
+        plus_zero = parse_state(
+            {
+                "tracker_id": 1,
+                "lat": 37.5,
+                "lng": 127.0,
+                "timestamp": "2026-10-28T05:50:12+00:00",
+            }
+        )
+    finally:
+        set_account_timezone(UTC)
+    assert naive.timestamp is not None
+    assert format_zulu(naive.timestamp) == "2026-10-28T05:50:12Z"
+    assert naive.received_timestamp == datetime(2026, 10, 28, 14, 50, 12)
+    assert naive.received_timestamp.tzinfo is None
+    assert format_zulu(offset.timestamp) == "2026-10-28T05:50:12Z"
+    assert offset.received_timestamp is not None
+    assert offset.received_timestamp.utcoffset() == timedelta(hours=9)
+    assert format_zulu(already.timestamp) == "2026-10-28T05:50:12Z"
+    assert plus_zero is not None
+    assert format_zulu(plus_zero.timestamp) == "2026-10-28T05:50:12Z"
+    assert to_outbound_message(naive).to_payload()["timestamp"] == (
+        "2026-10-28T05:50:12Z"
+    )
 
 
 def test_invalid_timestamp_falls_through_to_the_next_field():

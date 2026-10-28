@@ -15,6 +15,7 @@ _SETTINGS_ENV = (
     "NAVIXY_BASE_URL",
     "NAVIXY_WS_URL",
     "NAVIXY_API_KEY",
+    "NAVIXY_TIMEZONE",
     "POLL_INTERVAL_SECONDS",
     "NAVIXY_FAILOVER_MAX_ATTEMPTS",
     "NAVIXY_FAILOVER_BACKOFF_INITIAL_SECONDS",
@@ -186,6 +187,13 @@ def test_app_env_selects_the_production_file(monkeypatch):
 def test_compose_passes_app_env_into_the_container():
     text = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "APP_ENV: ${APP_ENV:-development}" in text
+
+
+def test_invalid_navixy_timezone_names_the_setting(monkeypatch):
+    _scrub(monkeypatch)
+    monkeypatch.setenv("NAVIXY_TIMEZONE", "Not/AZone")
+    with pytest.raises(RuntimeError, match="Invalid NAVIXY_TIMEZONE='Not/AZone'"):
+        load_settings()
 
 
 def test_env_example_documents_every_setting_and_stays_trackable():

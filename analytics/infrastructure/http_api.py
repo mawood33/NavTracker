@@ -31,6 +31,7 @@ from analytics.domain.reference import Evidence, Msr, Site
 from analytics.domain.reports import Report
 from analytics.domain.routing import RoutingError
 from analytics.domain.tracks import GpsFix
+from navtracker_common.timeutil import format_zulu
 
 
 class HealthView(Protocol):
@@ -627,4 +628,4 @@ def _msr(route: Msr) -> dict[str, object]:
 
 
 def _iso(value: datetime) -> str:
-    return value.isoformat()
+    return format_zulu(value)

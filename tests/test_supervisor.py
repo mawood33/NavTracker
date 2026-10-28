@@ -479,7 +479,7 @@ def test_dedupes_tracker_id_and_timestamp_across_failover(caplog):
         assert [item.timestamp for item in publisher.published] == [T1, T2]
         assert clock.now_calls == 0
         assert "Polling resumes from last received fix" in caplog.text
-        assert T1.isoformat() in caplog.text
+        assert "2026-01-01T00:00:00Z" in caplog.text
         await _shutdown(task)
 
     asyncio.run(scenario())
@@ -534,7 +534,7 @@ def test_mixed_naive_and_aware_timestamps_dedupe_across_failover(caplog):
         assert "raw_tzinfo=None" in text
         assert "raw_tzinfo=UTC" in text
         assert "raw_tzinfo=UTC+02:00" in text
-        assert "normalized_utc=2026-01-01T00:00:00+00:00" in text
+        assert "normalized_utc=2026-01-01T00:00:00Z" in text
         assert "previous_tzinfo=None" in text
         assert "decision=publish" in text
         assert "decision=duplicate" in text
@@ -590,11 +590,11 @@ def test_position_log_shows_a_naive_cursor_before_publish(caplog):
         text = caplog.text
         assert (
             "previous_type=datetime previous_tzinfo=None "
-            "previous_utc=2026-01-01T00:00:00+00:00 decision=publish"
+            "previous_utc=2026-01-01T00:00:00Z decision=publish"
         ) in text
         assert "source=poll" in text
         assert "raw_tzinfo=None" in text
-        assert "normalized_utc=2026-01-01T00:00:00+00:00" in text
+        assert "normalized_utc=2026-01-01T00:00:00Z" in text
         assert "latitude=10.5" in text
         assert "longitude=-20.25" in text
         assert "speed=1.5" in text
@@ -856,6 +856,26 @@ def test_rediscovery_adds_a_tracker_for_polling(caplog):
         await _shutdown(task)
 
     asyncio.run(scenario())
+
+
+def test_startup_logs_the_account_timezone_from_user_info(caplog):
+    async def scenario():
+        caplog.set_level(logging.INFO)
+
+        class ZoneReader:
+            async def load_account_timezone(self):
+                return "Asia/Seoul"
+
+        supervisor = _supervisor(
+            reader=ZoneReader(),
+            stream=ExplodingStream(),
+            tracker_ids=[1],
+            mode=IngestionMode.POLL,
+        )
+        await supervisor._prepare_account_timezone()
+
+    asyncio.run(scenario())
+    assert "Navixy account timezone=Asia/Seoul source=user/get_info" in caplog.text
 
 
 def test_websocket_seeds_the_current_state_once():

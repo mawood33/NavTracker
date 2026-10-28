@@ -38,6 +38,7 @@ from analytics.domain.correlation import TacrepMessage, parse_tacrep_line
 from analytics.domain.geo import haversine_meters, point_in_polygon
 from analytics.domain.reference import Msr, match_msr, parse_site_types
 from analytics.domain.thresholds import AnalysisThresholds
+from navtracker_common.timeutil import format_zulu
 
 _DTG_RE = re.compile(
     r"\b(\d{2})(\d{2})(\d{2})Z([A-Za-z]{3})(\d{2}|\d{4})\b",
@@ -302,7 +303,7 @@ def report_document(report: Report) -> dict[str, object]:
         "source": report.source,
         "layer": report.layer,
         "message_id": report.message_id,
-        "observed_at": report.observed_at.isoformat(),
+        "observed_at": format_zulu(report.observed_at),
         "latitude": report.latitude,
         "longitude": report.longitude,
         "site_type": report.site_type,

@@ -36,6 +36,7 @@ from navtracker_common.settings import (
 from navtracker_common.settings import (
     pick_setting as _pick,
 )
+from navtracker_common.timeutil import zone_from_name
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class Settings:
     encryption_key: str
     mode: str
     fernet_key: bytes | None
+    navixy_timezone: str | None = None
 
 def load_settings(config_dir: str | Path = "config") -> Settings:
     environment = os.getenv("APP_ENV", "development")
@@ -247,10 +249,19 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
                 DEFAULT_DISCOVERY_INTERVAL_SECONDS,
             )
         ),
+        navixy_timezone=_navixy_timezone(),
     )
     if settings.chatsurfer_encryption_required:
         encrypted_room_name(settings.chatsurfer_room_name_encrypted)
     return settings
+
+
+def _navixy_timezone() -> str | None:
+    raw = os.getenv("NAVIXY_TIMEZONE")
+    if raw is None or raw.strip() == "":
+        return None
+    zone_from_name(raw, source="NAVIXY_TIMEZONE")
+    return raw.strip()
 
 
 _CRYPTO_MODES = {"pem", "ssh", "fernet"}

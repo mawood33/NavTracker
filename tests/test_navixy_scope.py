@@ -17,6 +17,7 @@ def test_subscribe_message_selects_tracker_ids_only():
 
     assert message["action"] == "subscribe"
     assert message["hash"] == "hash-1"
+    assert message["iso_datetime"] is True
     assert "trackers" not in message
     assert message["requests"][0]["target"] == {
         "type": "selected",
@@ -173,6 +174,7 @@ def test_connect_sends_selected_subscription(monkeypatch):
     assert query["X-Atmosphere-Transport"] == "websocket"
     assert query["Content-Type"] == "application/json"
     assert query["X-atmo-protocol"] == "true"
+    assert query["iso_datetime"] == "true"
     assert "X-Atmosphere-TrackMessageSize" not in query
     assert "hash-1" not in seen[0]
     assert sent[0]["requests"][0]["target"]["type"] == "selected"

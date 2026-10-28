@@ -40,6 +40,7 @@ from analytics.domain.reports import (
     Report,
 )
 from analytics.domain.tracks import GpsFix
+from navtracker_common.timeutil import format_zulu
 
 
 class QueryService:
@@ -206,7 +207,7 @@ class QueryService:
             labels = session_labels(item.messages)
             row: dict[str, object] = {
                 "cell_id": item.cell_id,
-                "window_start": item.window_start.isoformat(),
+                "window_start": format_zulu(item.window_start),
                 "label": item.label,
                 "best_score": item.best_score,
                 "source_ids": list(item.source_ids),

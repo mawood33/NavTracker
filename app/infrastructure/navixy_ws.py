@@ -31,6 +31,7 @@ _ATMOSPHERE_QUERY = (
     ("X-Atmosphere-Transport", "websocket"),
     ("Content-Type", "application/json"),
     ("X-atmo-protocol", "true"),
+    ("iso_datetime", "true"),
 )
 _HANDSHAKE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -53,6 +54,7 @@ def build_subscribe_message(
     return {
         "action": "subscribe",
         "hash": api_key,
+        "iso_datetime": True,
         "requests": [
             {
                 "type": "state_batch",

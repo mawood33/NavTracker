@@ -12,6 +12,7 @@ from navtracker_common.crypto import CryptoHandler
 from navtracker_common.errors import PublicationError
 from navtracker_common.limiter import RateLimiter
 from navtracker_common.publication import OutboundMessage
+from navtracker_common.timeutil import format_zulu
 
 logger = logging.getLogger(__name__)
 
@@ -709,9 +710,7 @@ def _page_size(value: int, cap: int) -> int:
 
 
 def _iso(moment: datetime) -> str:
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return format_zulu(moment)
 
 
 def _room_search_body(room_name: str) -> dict[str, object]:

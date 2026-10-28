@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from app.infrastructure.navixy_parse import (
     tracker_source_map,
 )
 
+from navtracker_common.timeutil import account_timezone, set_account_timezone
 from test_settings import _scrub
 
 
@@ -125,9 +127,36 @@ def test_list_tracker_ids_posts_the_tracker_list_endpoint():
         assert stub.calls == [
             (
                 "https://api.example/v2/tracker/list",
-                {"hash": "secret-hash"},
+                {"hash": "secret-hash", "iso_datetime": True},
             )
         ]
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_navixy_requests_ask_for_iso_datetimes_and_cache_the_account_zone():
+    async def scenario():
+        client = NavixyApiClient("https://api.example/v2", "secret-hash")
+        assert client.client.headers["NVX-ISO-DateTime"] == "true"
+        await client.client.aclose()
+        stub = _StubHttp(
+            {
+                "success": True,
+                "user_info": {"time_zone": "Asia/Seoul", "login": "secret-user"},
+            }
+        )
+        client.client = stub
+        assert await client.load_account_timezone() == "Asia/Seoul"
+        assert await client.load_account_timezone() == "Asia/Seoul"
+        assert stub.calls == [
+            (
+                "https://api.example/v2/user/get_info",
+                {"hash": "secret-hash", "iso_datetime": True},
+            )
+        ]
+        assert str(account_timezone()) == "Asia/Seoul"
+        set_account_timezone(UTC)
         await client.close()
 
     asyncio.run(scenario())

@@ -27,7 +27,12 @@ from app.domain.ports import (
     PositionSubscription,
     TrackerCatalog,
 )
-from navtracker_common.timeutil import ensure_utc
+from navtracker_common.timeutil import (
+    ensure_utc,
+    format_zulu,
+    set_account_timezone,
+    zone_from_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +89,7 @@ class IngestionSupervisor:
         ),
         discovery_backoff_cap: float = DEFAULT_DISCOVERY_BACKOFF_CAP_SECONDS,
         seed_current_state: bool = True,
+        account_timezone: str | None = None,
     ):
         self.reader = reader
         self.stream = stream
@@ -100,6 +106,7 @@ class IngestionSupervisor:
         self._discovery_backoff_initial = discovery_backoff_initial
         self._discovery_backoff_cap = discovery_backoff_cap
         self.seed_current_state = seed_current_state
+        self._account_timezone_name = account_timezone
         self._ordered_ids = tuple(dict.fromkeys(tracker_ids))
         self._scope = set(self._ordered_ids)
         self._uses_discovery = catalog is not None and not self._ordered_ids
@@ -119,6 +126,7 @@ class IngestionSupervisor:
         )
 
     async def run(self) -> None:
+        await self._prepare_account_timezone()
         retry_task = asyncio.create_task(
             self._outbox.run(),
             name="publish-retry",
@@ -419,6 +427,43 @@ class IngestionSupervisor:
             )
             self._scope_changed.set()
 
+    async def _prepare_account_timezone(self) -> None:
+        """Use NAVIXY_TIMEZONE, otherwise read user/get_info once."""
+
+        if self._account_timezone_name:
+            set_account_timezone(
+                zone_from_name(
+                    self._account_timezone_name,
+                    source="NAVIXY_TIMEZONE",
+                )
+            )
+            logger.info(
+                "Navixy account timezone=%s source=NAVIXY_TIMEZONE",
+                self._account_timezone_name.strip(),
+            )
+            return
+        load = getattr(self.reader, "load_account_timezone", None)
+        if not callable(load):
+            return
+        try:
+            name = load()
+            if isinstance(name, Awaitable):
+                name = await name
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Navixy account timezone unavailable; "
+                "naive Navixy times stay UTC: %s",
+                exc,
+            )
+            return
+        if isinstance(name, str) and name.strip():
+            logger.info(
+                "Navixy account timezone=%s source=user/get_info",
+                name.strip(),
+            )
+
     async def _load_source_map(self) -> dict[int, int] | None:
         """Return source id to tracker id, or None when unavailable.
 
@@ -672,7 +717,7 @@ class IngestionSupervisor:
             )
             return
         rendered = ", ".join(
-            f"{tracker_id}@{stamp.isoformat()}"
+            f"{tracker_id}@{format_zulu(stamp)}"
             for tracker_id, stamp in sorted(self._last_received_at.items())
         )
         logger.info(

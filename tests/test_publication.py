@@ -113,7 +113,7 @@ def test_retry_budget_then_drop_logs_the_fix(caplog):
         assert [item.timestamp for item in abandoned] == [T1]
         assert "Dropping unpublished fix after 3 attempts" in caplog.text
         assert "tracker_id=4" in caplog.text
-        assert T1.isoformat() in caplog.text
+        assert "2026-01-01T00:00:00Z" in caplog.text
         assert "PublicationError" in caplog.text
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

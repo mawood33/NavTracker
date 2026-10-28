@@ -11,9 +11,13 @@ reads both, with the poll shape winning when both are present:
 - ``connection_status`` and ``movement_status`` from the state object
 
 A missing timestamp stays missing. It is not replaced with the clock.
-A value with no offset is UTC. Aware values are converted to UTC. The
-poll and websocket parsers share this rule. ``received_timestamp`` keeps
-the parsed value from before that conversion, including a naive timezone.
+Navixy writes ``YYYY-MM-DD HH:MM:SS`` in the account timezone unless the
+call asked for ISO 8601. An offset, including ``Z``, is converted to UTC.
+A value that still has no offset is read in the account timezone from
+``user/get_info`` (or ``NAVIXY_TIMEZONE``), then converted to UTC.
+``gps.updated`` is the fix time. ``user_time`` on an event is the account
+clock and is not the fix. ``received_timestamp`` keeps the parsed value
+from before that conversion.
 """
 
 from collections.abc import Mapping
@@ -22,7 +26,7 @@ from typing import Any
 
 from app.domain.entities import TrackerPosition
 from app.domain.errors import TrackerDiscoveryError
-from navtracker_common.timeutil import ensure_utc
+from navtracker_common.timeutil import account_timezone, ensure_utc
 
 
 def parse_poll_response(payload: Any, tracker_id: int) -> TrackerPosition:
@@ -220,8 +224,14 @@ def _first_timestamp(
     for value in values:
         parsed = _timestamp(value)
         if parsed is not None:
-            return ensure_utc(parsed), parsed
+            return _as_utc(parsed), parsed
     return None, None
+
+
+def _as_utc(parsed: datetime) -> datetime:
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        parsed = parsed.replace(tzinfo=account_timezone())
+    return ensure_utc(parsed)
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -236,6 +246,24 @@ def _timestamp(value: object) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def parse_account_timezone(payload: object) -> str | None:
+    """Return ``user_info.time_zone`` from ``user/get_info``.
+
+    The field is an IANA timezone id. A missing field returns None.
+    The message does not include the rest of the user record.
+    """
+
+    if not isinstance(payload, dict) or payload.get("success") is False:
+        return None
+    info = payload.get("user_info")
+    if not isinstance(info, dict):
+        return None
+    zone = info.get("time_zone")
+    if isinstance(zone, str) and zone.strip():
+        return zone.strip()
+    return None
 
 
 def parse_tracker_list(payload: object) -> list[int]:

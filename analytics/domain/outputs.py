@@ -24,6 +24,7 @@ from analytics.domain.reference import Evidence, Msr, Site
 from analytics.domain.reports import Report, report_document
 from analytics.domain.routing import VehicleProfile
 from analytics.domain.tracks import GpsFix, dedupe_fixes
+from navtracker_common.timeutil import format_zulu
 
 SCHEMA_NAME = "navtracker.analytics"
 SCHEMA_VERSION = 2
@@ -137,7 +138,7 @@ def build_snapshot(
         "schema": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
         "type": "snapshot",
-        "as_of": as_of.isoformat(),
+        "as_of": format_zulu(as_of),
         "basemap": dict(basemap),
         "routing": dict(routing),
         "sites": [_site_row(site, levels) for site in sites],
@@ -422,7 +423,7 @@ def track_document(fix: GpsFix) -> dict[str, object]:
         "vehicle_id": fix.vehicle_id,
         "lat": fix.latitude,
         "lon": fix.longitude,
-        "timestamp": fix.timestamp.isoformat(),
+        "timestamp": format_zulu(fix.timestamp),
         "speed": fix.speed_mps,
         "heading": fix.heading,
         "origin_id": fix.origin_id,
@@ -453,7 +454,9 @@ def _evidence_item(item: Evidence, levels: LevelCatalog | None) -> dict[str, obj
         "source": item.source,
         "layer": item.layer,
         "message_id": item.message_id,
-        "observed_at": None if item.observed_at is None else item.observed_at.isoformat(),
+        "observed_at": (
+            None if item.observed_at is None else format_zulu(item.observed_at)
+        ),
     }
     if levels is not None:
         merge_level(row, levels.for_evidence(item))
@@ -484,7 +487,7 @@ def _route_row(route: Msr, reports: Sequence[Report]) -> dict[str, object]:
 def _track_feature(fix: GpsFix) -> dict[str, object]:
     return {
         "type": "Feature",
-        "id": f"{fix.vehicle_id}|{fix.timestamp.isoformat()}",
+        "id": f"{fix.vehicle_id}|{format_zulu(fix.timestamp)}",
         "geometry": {"type": "Point", "coordinates": [fix.longitude, fix.latitude]},
         "properties": track_document(fix),
     }
@@ -531,7 +534,9 @@ def _evidence_properties(
         "block": item.block,
         "warning": item.warning,
         "linked_ids": list(item.linked_ids),
-        "observed_at": None if item.observed_at is None else item.observed_at.isoformat(),
+        "observed_at": (
+            None if item.observed_at is None else format_zulu(item.observed_at)
+        ),
     }
     if levels is not None:
         merge_level(row, levels.for_evidence(item))

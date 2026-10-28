@@ -8,7 +8,7 @@ from typing import Protocol
 from app.application.messages import to_outbound_message
 from app.domain.entities import TrackerPosition
 from app.domain.ports import MessagePublisher
-from navtracker_common.timeutil import ensure_utc
+from navtracker_common.timeutil import ensure_utc, format_zulu
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def _utc_or_none(moment: datetime | None) -> datetime | None:
 def _stamp(position: TrackerPosition) -> str:
     if position.timestamp is None:
         return "none"
-    return position.timestamp.isoformat()
+    return format_zulu(position.timestamp)
 
 
 @dataclass
