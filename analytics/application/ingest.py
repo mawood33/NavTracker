@@ -39,7 +39,7 @@ from analytics.domain.reports import (
 from analytics.domain.tacrep_parse import parse_exercise_text
 from analytics.domain.templates import Tasking, link_responses
 from analytics.domain.timeutil import ensure_utc, valid_position
-from analytics.domain.tracks import GpsFix, fix_from_mapping
+from analytics.domain.tracks import GpsFix, fix_from_mapping, link16_vehicle_id
 from navtracker_common.chatsurfer import ChatReadError, ChatRoomMessage, backfill_window
 
 logger = logging.getLogger(__name__)
@@ -121,6 +121,8 @@ class IngestService:
             match_meters=state._coord_card.mismatch_meters,
         )
         state._refresh_correlations()
+        track_fixes = [fix for item in stamped if (fix := _track_fix(item)) is not None]
+        self.add_fixes(track_fixes)
 
     def ingest_event(
         self,
@@ -535,6 +537,31 @@ def _without_chat(message: TacrepMessage, chat_id: str) -> TacrepMessage | None:
     if history == message.history:
         return message
     return replace(message, history=history)
+
+
+def _track_fix(message: TacrepMessage) -> GpsFix | None:
+    """One track point. The LINK-16 number is the vehicle id.
+
+    A halt with no reported speed is stopped. Reports without a track
+    number stay messages and do not become GPS fixes.
+    """
+
+    vehicle = link16_vehicle_id(message.attributes)
+    if not vehicle:
+        return None
+    speed = message.speed_mps
+    if speed is None and "halt" in message.events:
+        speed = 0.0
+    return GpsFix(
+        vehicle_id=vehicle,
+        latitude=message.latitude,
+        longitude=message.longitude,
+        timestamp=message.observed_at,
+        speed_mps=speed,
+        heading=message.heading,
+        source=message.source_id or "tacrep",
+        origin_id=message.serial_full or message.source_message_id,
+    )
 
 
 def _json_object(body: str) -> dict[str, object] | None:

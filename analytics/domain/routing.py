@@ -1,7 +1,9 @@
 """Route between two sites and estimate travel time.
 
-TransloadOracle's extracted routing contract is the default: provider
-``osrm`` or ``mapbox``, public OSRM at ``https://router.project-osrm.org``,
+The default routing contract was extracted from TransloadOracle and now
+lives here. NavTracker does not call TransloadOracle to route. The
+default is provider ``osrm`` or ``mapbox``, public OSRM at
+``https://router.project-osrm.org``,
 and ETA minutes ``max(engine_minutes, miles / maxSpeedMph * 60)`` with
 ``maxSpeedMph`` capped at 120. Vehicle types are ``truck``,
 ``intermodal``, and ``rail`` (rail is rejected). Valhalla, GraphHopper,

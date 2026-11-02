@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from analytics.application.analysis import AnalysisService
@@ -28,8 +29,11 @@ from analytics.infrastructure.mgrs_grid import MgrsLibrary
 from analytics.infrastructure.reference_parse import FileReferences
 from analytics.infrastructure.room_publish import ChatRoomPublisher
 from analytics.infrastructure.routing_engines import build_router
+from analytics.infrastructure.transload_oracle import TransloadOraclePublisher
 from navtracker_common.chatsurfer import ChatSurferApiClient
 from navtracker_common.crypto import CryptoHandler
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +48,7 @@ class AnalyticsApplication:
     clairvoyant_stream: ClairvoyantWebSocket | None
     report_client: ClairvoyantReportClient | None
     frontend: FrontendPublisher | None
+    transload_oracle: TransloadOraclePublisher | None = None
 
     async def aclose(self) -> None:
         if self.chat is not None:
@@ -54,6 +59,8 @@ class AnalyticsApplication:
             await self.report_client.close()
         if self.frontend is not None:
             await self.frontend.close()
+        if self.transload_oracle is not None:
+            await self.transload_oracle.close()
 
 
 def wire_service(
@@ -126,9 +133,11 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
     """Construct clients and the analyzer. Does not bind, connect, or publish."""
 
     crypto_handler = _crypto(settings)
+    # read_rooms names truth rooms. The client is built only when a read
+    # or a publish will use it, so development can start with reads off
+    # and without a ChatSurfer certificate.
     needs_chat = (
         settings.chat_read_enabled
-        or bool(settings.read_rooms)
         or settings.publish_events
         or bool(settings.tacrep_rooms)
         or bool(settings.default_ingest_rooms)
@@ -180,15 +189,19 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
     frontend: FrontendPublisher | None = None
     if settings.frontend_enabled:
         frontend = FrontendPublisher(settings.frontend_ingest_url)
+    service = wire_service(settings, chat, report_client, frontend)
+    oracle = _transload_oracle(settings)
+    service._state.transload_oracle = oracle
     return AnalyticsApplication(
         settings=settings,
         crypto_handler=crypto_handler,
         chat=chat,
-        service=wire_service(settings, chat, report_client, frontend),
+        service=service,
         clairvoyant_reader=reader,
         clairvoyant_stream=stream,
         report_client=report_client,
         frontend=frontend,
+        transload_oracle=oracle,
     )
 
 
@@ -230,6 +243,26 @@ async def run_sources(app: AnalyticsApplication) -> None:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _transload_oracle(settings: AnalyticsSettings) -> TransloadOraclePublisher | None:
+    """Build a push client only when the integration is enabled and has a URL.
+
+    A missing URL stays pull-only: NavTracker still serves ``/api`` and
+    ``/v1`` and does not call out. Disabled is the default.
+    """
+
+    if not settings.transload_oracle_enabled:
+        logger.info("TransloadOracle integration disabled")
+        return None
+    if not settings.transload_oracle_base_url:
+        logger.info(
+            "TransloadOracle integration enabled without TRANSLOAD_ORACLE_BASE_URL; "
+            "no outbound calls"
+        )
+        return None
+    logger.info("TransloadOracle integration enabled; push failures are ignored")
+    return TransloadOraclePublisher(settings.transload_oracle_base_url)
 
 
 def _crypto(settings: AnalyticsSettings) -> CryptoHandler | None:

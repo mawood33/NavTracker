@@ -52,7 +52,7 @@ class SiteView(Protocol):
         """Loaded known sites."""
 
     def api_sites(self) -> list[dict[str, object]]:
-        """Sites in the TransloadOracle web shape."""
+        """Sites in the web list a TransloadOracle client may pull."""
 
     def verify_site(self, name: str) -> Mapping[str, object]:
         """Mark a site confirmed from manual or truth data."""
@@ -103,6 +103,15 @@ class IngestView(Protocol):
         source_id: str = "",
     ) -> Mapping[str, object]:
         """Accept a batch of events."""
+
+    def dev_replay_enabled(self) -> bool:
+        """True when APP_ENV is development."""
+
+    def ingest_dev_fixes(self, payload: object) -> Mapping[str, object]:
+        """Accept Navixy-shaped fixes. Development only."""
+
+    def analyze_now(self) -> Mapping[str, object]:
+        """Run analysis once and broadcast. Development only."""
 
 
 class ActivityView(Protocol):
@@ -256,6 +265,14 @@ def route_request(
         return _ingest_events(body, headers, snapshot, batch=False, tacrep=True)
     if method == "POST" and target == "/v1/events/batch":
         return _ingest_events(body, headers, snapshot, batch=True, tacrep=False)
+    if method == "POST" and target == "/v1/dev/fixes":
+        if not snapshot.dev_replay_enabled():
+            return _json(404, {"error": "not found"})
+        return _dev_fixes(body, snapshot)
+    if method == "POST" and target == "/v1/dev/analyze":
+        if not snapshot.dev_replay_enabled():
+            return _json(404, {"error": "not found"})
+        return _json(200, dict(snapshot.analyze_now()))
     if method == "POST" and target == "/v1/coord-card/schema":
         return _coord_card_schema(body, headers, snapshot)
     if method == "POST" and target == "/v1/coord-card":
@@ -419,6 +436,22 @@ def _coord_card_schema(
         return _error(400, str(exc), "invalid_schema")
 
 
+def _dev_fixes(
+    body: bytes,
+    snapshot: IngestView,
+) -> tuple[int, dict[str, object] | str, str]:
+    if not body:
+        return _error(400, "Expected JSON.", "invalid_json")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except ValueError:
+        return _error(400, "Expected JSON.", "invalid_json")
+    try:
+        return _json(200, dict(snapshot.ingest_dev_fixes(payload)))
+    except ValueError as exc:
+        return _error(400, str(exc), "invalid_event")
+
+
 def _source_id(headers: Mapping[str, str], payload: Mapping[str, object] | None) -> str:
     header = headers.get("x-source-id", "").strip()
     if header:
@@ -554,16 +587,26 @@ def encode_response(
     status: int,
     payload: dict[str, object] | str,
     content_type: str = "application/json",
+    cors_origin: str = "",
 ) -> bytes:
     if isinstance(payload, str):
         body = payload.encode("utf-8")
     else:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    reason = "OK" if status == 200 else "ERROR"
+    reason = {200: "OK", 204: "No Content"}.get(status, "ERROR")
+    cors = ""
+    if cors_origin:
+        cors = (
+            f"Access-Control-Allow-Origin: {cors_origin}\r\n"
+            "Access-Control-Allow-Headers: Authorization, Content-Type\r\n"
+            "Access-Control-Allow-Methods: GET, POST, PUT\r\n"
+            "Vary: Origin\r\n"
+        )
     header = (
         f"HTTP/1.1 {status} {reason}\r\n"
         f"Content-Type: {content_type}\r\n"
         f"Content-Length: {len(body)}\r\n"
+        f"{cors}"
         "Connection: close\r\n\r\n"
     )
     return header.encode("ascii") + body

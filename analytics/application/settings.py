@@ -122,3 +122,5 @@ class AnalyticsSettings:
     output_latlon_separator: str = " "
     output_latlon_hemisphere: str = "suffix"
     output_coord_configured: bool = False
+    transload_oracle_enabled: bool = False
+    transload_oracle_base_url: str = ""

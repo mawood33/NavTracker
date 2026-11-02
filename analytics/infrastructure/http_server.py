@@ -47,6 +47,13 @@ async def serve(
             if _websocket_upgrade(method, path, headers):
                 await _serve_websocket(reader, writer, path, headers, service)
                 return
+            policy = service.auth_policy()
+            origin = headers.get("origin", "").strip()
+            cors = origin if origin and origin_allowed(policy, headers) else ""
+            if method == "OPTIONS" and cors:
+                writer.write(encode_response(204, "", "text/plain", cors))
+                await writer.drain()
+                return
             status, payload, content_type = await asyncio.to_thread(
                 partial(
                     route_request,
@@ -55,10 +62,10 @@ async def serve(
                     body,
                     headers,
                     service,
-                    auth=service.auth_policy(),
+                    auth=policy,
                 )
             )
-            writer.write(encode_response(status, payload, content_type))
+            writer.write(encode_response(status, payload, content_type, cors))
             await writer.drain()
         except asyncio.CancelledError:
             raise

@@ -1,8 +1,11 @@
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from analytics.domain.timeutil import ensure_utc, valid_position
+
+_LINK16_DIGITS = re.compile(r"^\d+$")
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,37 @@ def _timestamp(value: object) -> datetime | None:
     except ValueError:
         return None
     return ensure_utc(parsed)
+
+
+def canonical_link16(text: str) -> str:
+    """Normalize a LINK-16 track number.
+
+    Digit-only values that fit in five digits are zero-padded, so
+    ``01000`` and ``1000`` are one track. Anything else is kept as written
+    after stripping surrounding space. A blank or ``-`` is empty.
+    """
+
+    token = text.strip()
+    if token == "" or token == "-":
+        return ""
+    if _LINK16_DIGITS.fullmatch(token):
+        number = int(token)
+        if number < 100_000:
+            return f"{number:05d}"
+        return str(number)
+    return token
+
+
+def link16_vehicle_id(attributes: Sequence[tuple[str, str]]) -> str:
+    """Return ``link16:<number>`` when a message carries a track number."""
+
+    for key, value in attributes:
+        if key != "link16":
+            continue
+        canonical = canonical_link16(value)
+        if canonical:
+            return f"link16:{canonical}"
+    return ""
 
 
 def seconds_between(start: datetime, end: datetime) -> float:

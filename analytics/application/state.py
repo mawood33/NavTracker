@@ -90,6 +90,7 @@ class AnalyticsState:
     _room_memory: dict[str, RoomMemory] = field(default_factory=dict)
     _scrubbed_ids: set[str] = field(default_factory=set)
     _chat_transport: str = "poll"
+    transload_oracle: DocumentSink | None = None
 
     def _refresh_correlations(self) -> None:
         self._correlations = correlate(

@@ -27,8 +27,9 @@ from analytics.domain.correlation import TacrepMessage
 from analytics.domain.grid import CellActivity
 from analytics.domain.level_assessment import LevelCatalog
 from analytics.domain.reference import Msr, Site
+from analytics.domain.replay_files import fixes_from_navixy
 from analytics.domain.reports import Report
-from analytics.domain.tracks import GpsFix
+from analytics.domain.tracks import GpsFix, fix_from_mapping
 
 __all__ = ["AnalyticsService", "DocumentSink", "ReportSource"]
 
@@ -237,6 +238,33 @@ class AnalyticsService:
         source_id: str = "",
     ) -> dict[str, object]:
         return self._ingest.ingest_batch(payload, source_id)
+
+    def dev_replay_enabled(self) -> bool:
+        return self._state.settings.environment == "development"
+
+    def ingest_dev_fixes(self, payload: object) -> dict[str, object]:
+        """Accept Navixy or plain fixes. Development only."""
+
+        if not self.dev_replay_enabled():
+            raise PermissionError("dev replay is only available when APP_ENV=development")
+        fixes: list[GpsFix] = []
+        for item in fixes_from_navixy(payload):
+            fix = fix_from_mapping(item, source="dev-replay", speed_unit="mps")
+            if fix is not None:
+                fixes.append(fix)
+        self.add_fixes(fixes)
+        self.analyze()
+        self.publish_output()
+        return {"accepted": len(fixes)}
+
+    def analyze_now(self) -> dict[str, object]:
+        """Run one analysis pass and broadcast. Development only."""
+
+        if not self.dev_replay_enabled():
+            raise PermissionError("dev replay is only available when APP_ENV=development")
+        self.analyze()
+        message = self.publish_output()
+        return {"analyzed": True, "broadcast": message is not None}
 
     def correlations_document(self) -> dict[str, object]:
         return self._query.correlations_document()

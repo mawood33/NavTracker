@@ -34,6 +34,7 @@ from analytics.domain.positions import (
     parse_correlates,
     parse_ellipse,
     parse_fillins,
+    parse_ivo,
     parse_location,
     parse_orientation,
     parse_report_time,
@@ -73,12 +74,27 @@ _ACTIVITY_EVENTS = {
     "rotator": "rotator",
     "mover": "mover",
     "movement": "mover",
+    "mvr": "mover",
     "halt": "halt",
+    "mvr halt": "halt",
     "stopping": "stopping",
     "stop": "stop",
     "slowing": "slowing",
     "slowdown": "slowdown",
 }
+# Companion MTI lines use this order when the card has no MTI type.
+_MTI_FIELDS = (
+    "callsign",
+    "id",
+    "activity",
+    "bullseye",
+    "link16",
+    "location",
+    "tai_msr",
+    "cat",
+    "time",
+    "fillins",
+)
 
 
 def parse_exercise_text(
@@ -207,6 +223,13 @@ def _record_message(
     if serial is None:
         return None
     matched, block_label, block_warning = card.match(serial.kind, serial.serial)
+    if _tacrep_series(serial):
+        mti = _mti_type(card)
+        if mti is not None:
+            matched = mti
+        if block_warning:
+            block_label = ""
+            block_warning = ""
     fields = _layout(card, serial, matched)
     assigned, attributes = _assign(fields, values)
     warnings = [block_warning] if block_warning else []
@@ -221,12 +244,22 @@ def _record_message(
     )
     speed = _speed_mps(assigned.get("speed", ""))
     heading = _float_token(assigned.get("azimuth", ""))
-    vehicles, fill_speed, fill_heading, halted = parse_fillins(assigned.get("fillins", ""))
+    fill = assigned.get("fillins", "")
+    activity = assigned.get("activity", "")
+    vehicles, fill_speed, fill_heading, halted = parse_fillins(fill)
+    act_count, act_speed, act_heading, act_halt = parse_fillins(activity)
+    if vehicles is None:
+        vehicles = act_count
+    if fill_speed is None:
+        fill_speed = act_speed
+    if fill_heading is None:
+        fill_heading = act_heading
+    halted = halted or act_halt
     if speed is None:
         speed = fill_speed
     if heading is None:
         heading = fill_heading
-    events = _events(assigned.get("activity", ""), assigned.get("event", ""), halted)
+    events = _events(activity, assigned.get("event", ""), halted)
     area, route = _areas(assigned)
     ellipse = parse_ellipse(assigned.get("ellipse", ""), card.ellipse_unit)
     orientation = parse_orientation(
@@ -235,7 +268,12 @@ def _record_message(
     )
     level = parse_cat(assigned.get("cat", ""))
     phrase, level_name, band, weight, attributes = _confidence(assigned, attributes, card)
+    ivo = parse_ivo(fill) or parse_ivo(activity)
+    if ivo:
+        attributes.append(("ivo", ivo))
     tacrep_type = matched.name if isinstance(matched, CoordType) else ""
+    if not tacrep_type and _tacrep_series(serial):
+        tacrep_type = "MTI"
     subject = assigned.get("subject", "")
     equipment = _equipment(assigned.get("equipment", ""))
     vacant = _vacant(assigned)
@@ -302,7 +340,27 @@ def _serial_at_id(values: Sequence[str], card: CoordCard) -> SerialId | None:
     return None
 
 
+def _tacrep_series(serial: SerialId) -> bool:
+    return serial.base_id.startswith("TACREP-")
+
+
+def _mti_type(card: CoordCard) -> CoordType | None:
+    for item in card.types:
+        if item.name.strip().upper() == "MTI" or "J" in item.kinds:
+            if "activity" in item.fields and "link16" in item.fields:
+                return item
+    for item in card.types:
+        if "activity" in item.fields and "link16" in item.fields and "fillins" in item.fields:
+            return item
+    return None
+
+
 def _layout(card: CoordCard, serial: SerialId, matched: CoordType | None) -> tuple[str, ...]:
+    if _tacrep_series(serial):
+        mti = _mti_type(card)
+        if mti is not None:
+            return mti.fields
+        return _MTI_FIELDS
     if serial.updated:
         fused = card.fused_type()
         if fused is not None:
@@ -379,9 +437,17 @@ def _events(activity: str, event: str, halted: bool) -> tuple[str, ...]:
     found: list[str] = []
     for token in (activity, event):
         for part in re.split(r"[,/]|\band\b", token):
-            mapped = _ACTIVITY_EVENTS.get(part.strip().lower())
+            piece = part.strip().lower()
+            mapped = _ACTIVITY_EVENTS.get(piece)
             if mapped and mapped not in found:
                 found.append(mapped)
+            # "1 MVR" is a mover. "1 MVR HALT" stays a halt.
+            if (
+                re.search(r"\bmvr\b", piece)
+                and not re.search(r"\bhalt\b", piece)
+                and "mover" not in found
+            ):
+                found.append("mover")
     if halted and "halt" not in found:
         found.append("halt")
     return tuple(found)

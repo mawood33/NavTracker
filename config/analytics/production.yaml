@@ -81,6 +81,10 @@ frontend:
   enabled: false
   ingest_url: ""
 
+transload_oracle:
+  enabled: false
+  base_url: ""
+
 reference:
   columns:
     name: "Name/ID"

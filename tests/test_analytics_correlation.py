@@ -374,6 +374,8 @@ def test_checked_in_defaults_match_transload_oracle():
     assert production.routing_engine == "msr"
     assert production.http_host == "127.0.0.1"
     assert settings.max_fixes_per_vehicle == 100
+    assert settings.transload_oracle_enabled is False
+    assert settings.transload_oracle_base_url == ""
 
 
 def test_mapbox_settings_require_a_token(monkeypatch: pytest.MonkeyPatch):

@@ -141,6 +141,14 @@ class AnalysisLoop:
                             await self._state.frontend.publish(message)
                         except Exception:
                             logger.exception("Frontend publication failed")
+                    if message is not None and self._state.transload_oracle is not None:
+                        try:
+                            await self._state.transload_oracle.publish(message)
+                        except Exception:
+                            logger.warning(
+                                "TransloadOracle push failed; "
+                                "NavTracker is continuing without it"
+                            )
             except asyncio.CancelledError:
                 raise
             except Exception:

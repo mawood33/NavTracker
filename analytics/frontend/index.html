@@ -17,6 +17,8 @@
   <button id="connect" type="button">Connect</button>
   <h2>Sites</h2>
   <ul id="sites"></ul>
+  <h2>Tracks</h2>
+  <ul id="tracks"></ul>
   <h2>Route</h2>
   <label>From <input id="from" value=""></label>
   <label>To <input id="to" value=""></label>
@@ -25,34 +27,67 @@
   <pre id="result"></pre>
   <script>
     const params = new URLSearchParams(location.search);
+    const token = params.get("token") || "";
     const wsInput = document.getElementById("ws");
-    if (params.get("ws")) wsInput.value = params.get("ws");
+    if (params.get("ws")) {
+      let wsUrl = params.get("ws");
+      if (token && wsUrl.indexOf("token=") === -1) {
+        wsUrl += (wsUrl.indexOf("?") === -1 ? "?" : "&") + "token=" + encodeURIComponent(token);
+      }
+      wsInput.value = wsUrl;
+    }
     const api = params.get("api") || "http://localhost:8080";
     let socket;
+    function trackItem(fix) {
+      const item = document.createElement("li");
+      item.textContent = fix.vehicle_id + " " + fix.lat + "," + fix.lon +
+        " " + (fix.timestamp || "") + " speed " + fix.speed + " hdg " + fix.heading;
+      return item;
+    }
+    function render(message) {
+      const basemap = message.basemap || {};
+      const routing = message.routing || {};
+      document.getElementById("basemap").textContent =
+        "Basemap: " + (basemap.provider || "unknown") +
+        (basemap.attribution ? " (" + basemap.attribution + ")" : "");
+      const names = (routing.profiles || []).map((item) => item.name).join(", ");
+      document.getElementById("routing").textContent =
+        "Routing: " + (routing.engine || "unknown") +
+        (names ? " profiles " + names : "");
+      const list = document.getElementById("sites");
+      const tracks = document.getElementById("tracks");
+      if (message.type === "snapshot") {
+        list.replaceChildren();
+        for (const site of message.sites || []) {
+          const item = document.createElement("li");
+          const types = (site.types || []).join(",");
+          item.textContent = site.name + " " + (site.assessment || "") + " " +
+            (site.status || "") + " " + site.confidence + (types ? " " + types : "");
+          list.appendChild(item);
+        }
+        tracks.replaceChildren();
+        for (const fix of message.tracks || []) {
+          tracks.appendChild(trackItem(fix));
+        }
+      }
+      if (message.type === "update") {
+        for (const change of message.changes || []) {
+          if (change.kind === "site" && change.op === "upsert" && change.item) {
+            const item = document.createElement("li");
+            item.textContent = change.item.name + " " + (change.item.assessment || "");
+            list.appendChild(item);
+          }
+          if (change.kind === "track" && change.op === "upsert" && change.item) {
+            tracks.appendChild(trackItem(change.item));
+          }
+        }
+      }
+    }
     document.getElementById("connect").onclick = () => {
       if (socket) socket.close();
       socket = new WebSocket(wsInput.value);
       socket.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        const basemap = message.basemap || {};
-        const routing = message.routing || {};
-        document.getElementById("basemap").textContent =
-          "Basemap: " + (basemap.provider || "unknown") +
-          (basemap.attribution ? " (" + basemap.attribution + ")" : "");
-        const names = (routing.profiles || []).map((item) => item.name).join(", ");
-        document.getElementById("routing").textContent =
-          "Routing: " + (routing.engine || "unknown") +
-          (names ? " profiles " + names : "");
-        const sites = message.sites || [];
-        const list = document.getElementById("sites");
-        if (message.type === "snapshot") {
-          list.replaceChildren();
-          for (const site of sites) {
-            const item = document.createElement("li");
-            item.textContent = site.name + " " + site.assessment + " " + site.status + " " + site.confidence;
-            list.appendChild(item);
-          }
-        }
+        render(JSON.parse(event.data));
       };
     };
     document.getElementById("route").onclick = async () => {
@@ -61,7 +96,9 @@
         to_site: document.getElementById("to").value,
         profile: document.getElementById("profile").value || "truck"
       });
-      const response = await fetch(api + "/routing?" + query.toString());
+      const headers = {};
+      if (token) headers.Authorization = "Bearer " + token;
+      const response = await fetch(api + "/routing?" + query.toString(), {headers: headers});
       document.getElementById("result").textContent = await response.text();
     };
   </script>

@@ -23,9 +23,12 @@ to the next hide state. A ``J``, ``I``, or ``E`` message enters
 
 Sessions group messages whose span from the first message stays inside
 the correlation window and whose cells are the anchor cell or an H3
-neighbor. Pair score is ``0.45 * same_subject + 0.35 * spatial +
-0.20 * time``. The subject term counts only an explicit subject.
-``minimum_transload_speed_mps`` is stored and is not used.
+neighbor. Reports that share a LINK-16 track number join the same
+session inside that window even when the cells are far apart. Pair
+score is ``0.45 * same_subject + 0.35 * spatial + 0.20 * time``. The
+subject term counts only an explicit subject.
+``minimum_transload_speed_mps`` is stored and is not used. These
+rules live in NavTracker. Nothing here calls TransloadOracle.
 """
 
 import hashlib
@@ -43,6 +46,7 @@ from analytics.domain.confidence_text import (
 from analytics.domain.positions import point_within_ellipse, point_within_radius
 from analytics.domain.reference import Evidence
 from analytics.domain.timeutil import ensure_utc, valid_position
+from analytics.domain.tracks import link16_vehicle_id
 
 ACTIVITY_STATES = (
     "pre_launch_hide",
@@ -55,6 +59,7 @@ _KINDS = frozenset({"O", "I", "J", "E", "G", "F", "UNKNOWN"})
 _TRANSLOAD_KINDS = frozenset({"J", "I", "E", "G", "F"})
 _NEXT_HIDE = {"launch": "hide_after_launch", "transload": "hide_after_transload"}
 _SERIAL_RE = re.compile(r"^([A-Z])-(\d{3})([A-Z]?)$")
+_TACREP_ID_RE = re.compile(r"^TACREP\s+(\d+)$")
 _KIND_TYPES = {
     "O": "launch",
     "I": "imagery",
@@ -739,12 +744,22 @@ def _joins(
     span = (message.observed_at - anchor.observed_at).total_seconds() / 60
     if span < 0 or span > policy.window_minutes:
         return False
+    if any(_same_link16(existing, message) for existing in session):
+        return True
     if _near_cell(anchor.cell_id, message.cell_id, policy.neighbor_k, neighbors):
         return True
     return any(
         within_ellipse(existing, message) or explicitly_linked(existing, message)
         for existing in session
     )
+
+
+def _same_link16(left: TacrepMessage, right: TacrepMessage) -> bool:
+    """True when both reports name the same LINK-16 track."""
+
+    left_id = link16_vehicle_id(left.attributes)
+    right_id = link16_vehicle_id(right.attributes)
+    return bool(left_id) and left_id == right_id
 
 
 def _near_cell(
@@ -798,12 +813,25 @@ def _identity(
 
 
 def parse_serial(token: str) -> "SerialId | None":
-    """Parse ``I-103``, ``I-103A``, or ``UPDATE G-501``.
+    """Parse ``I-103``, ``I-103A``, ``UPDATE G-501``, or ``TACREP 1``.
 
     A trailing letter is a correction. ``UPDATE`` supersedes corrections.
+    ``TACREP <n>`` is a J-series MTI id from the companion generator.
+    Its identity is ``TACREP-<n>``, which does not collide with ``J-###``.
     """
 
     text = token.strip().upper()
+    tacrep = _TACREP_ID_RE.fullmatch(text)
+    if tacrep is not None:
+        number = int(tacrep.group(1))
+        return SerialId(
+            kind="J",
+            serial=number,
+            suffix="",
+            base_id=f"TACREP-{number}",
+            full_id=f"TACREP {number}",
+            rank=0,
+        )
     update = _UPDATE_RE.fullmatch(text)
     body = update.group(1) if update is not None else text
     match = _SERIAL_RE.fullmatch(body)

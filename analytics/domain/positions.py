@@ -29,7 +29,8 @@ _CLOCK = re.compile(
     re.IGNORECASE,
 )
 _VEHICLES = re.compile(
-    r"(?:(\d+)\s*(?:x\s*)?(?:veh(?:icle)?s?)\b|\bveh(?:icle)?s?\s*[:=]?\s*(\d+))",
+    r"(?:(\d+)\s*(?:x\s*)?(?:veh(?:icle)?s?|mvrs?)\b"
+    r"|\b(?:veh(?:icle)?s?|mvrs?)\s*[:=]?\s*(\d+))",
     re.IGNORECASE,
 )
 _SPEED = re.compile(
@@ -41,6 +42,38 @@ _HEADING = re.compile(
     re.IGNORECASE,
 )
 _HALT = re.compile(r"\bhalt\b", re.IGNORECASE)
+_IVO = re.compile(r"\bIVO\s+(.+)$", re.IGNORECASE)
+_CARDINAL = re.compile(
+    r"\b(NORTH(?:EAST|WEST)?|SOUTH(?:EAST|WEST)?|EAST|WEST"
+    r"|NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW|NE|SE|SW|NW|N|E|S|W)\b",
+    re.IGNORECASE,
+)
+_CARDINAL_DEGREES = {
+    "N": 0.0,
+    "NORTH": 0.0,
+    "NNE": 22.5,
+    "NE": 45.0,
+    "NORTHEAST": 45.0,
+    "ENE": 67.5,
+    "E": 90.0,
+    "EAST": 90.0,
+    "ESE": 112.5,
+    "SE": 135.0,
+    "SOUTHEAST": 135.0,
+    "SSE": 157.5,
+    "S": 180.0,
+    "SOUTH": 180.0,
+    "SSW": 202.5,
+    "SW": 225.0,
+    "SOUTHWEST": 225.0,
+    "WSW": 247.5,
+    "W": 270.0,
+    "WEST": 270.0,
+    "WNW": 292.5,
+    "NW": 315.0,
+    "NORTHWEST": 315.0,
+    "NNW": 337.5,
+}
 _CORR = re.compile(r"CORRELATES\s+TO\s+(.+)$", re.IGNORECASE)
 _SERIAL = re.compile(r"[A-Z]-\d{3}[A-Z]?")
 _TAI_MSR_SPLIT = re.compile(r"\s*(?:/|,|\band\b)\s*", re.IGNORECASE)
@@ -244,6 +277,10 @@ def parse_fillins(text: str) -> tuple[int | None, float | None, float | None, bo
     """Return vehicle count, speed in m/s, heading degrees, and HALT.
 
     A speed without a unit is ignored. ``mph`` is miles per hour.
+    ``3 VEHICLES`` and ``1 MVR`` both set the count. A numeric heading
+    wins. Otherwise an 8-point or 16-point cardinal (``SW``, ``NNE``)
+    becomes degrees clockwise from true north. Words after ``IVO`` are
+    a place name, not a heading.
     """
 
     if missing_text(text):
@@ -260,7 +297,41 @@ def parse_fillins(text: str) -> tuple[int | None, float | None, float | None, bo
     heading_match = _HEADING.search(text)
     if heading_match is not None:
         heading = float(heading_match.group(1)) % 360
+    else:
+        heading = cardinal_heading(_without_ivo(text))
     return count, speed, heading, _HALT.search(text) is not None
+
+
+def parse_ivo(text: str) -> str:
+    """Return the place named by ``IVO <name>``, or an empty string."""
+
+    if missing_text(text):
+        return ""
+    match = _IVO.search(text.strip())
+    if match is None:
+        return ""
+    name = match.group(1).strip().strip("-").strip()
+    if missing_text(name):
+        return ""
+    return name
+
+
+def cardinal_heading(text: str) -> float | None:
+    """Read one 8-point or 16-point compass token as degrees from north."""
+
+    if missing_text(text):
+        return None
+    match = _CARDINAL.search(text)
+    if match is None:
+        return None
+    return _CARDINAL_DEGREES[match.group(1).upper()]
+
+
+def _without_ivo(text: str) -> str:
+    match = _IVO.search(text)
+    if match is None:
+        return text
+    return text[: match.start()]
 
 
 def parse_correlates(text: str) -> tuple[str, ...]:
