@@ -206,7 +206,7 @@ Drop every track whose `origin_id` equals `message_id`, and every track
 listed in `tracks`. The stored snapshot used for a new WebSocket client
 drops those fixes immediately. The log line is the id only.
 
-## Push adapter
+## Consumers
 
-`analytics/infrastructure/frontend.py` POSTs this same document to
-`ANALYTICS_FRONTEND_INGEST_URL`. It does not reshape sites or tracks.
+A program such as TransloadOracle reads these documents from the HTTP API
+and the `/ws` stream. NavTracker does not push them.

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "packages" / "navtracker_common"))
 
-from analytics.domain.replay_files import read_navixy_file  # noqa: E402
+from analytics.infrastructure.replay_files import read_navixy_file  # noqa: E402
 from analytics.infrastructure.replay_http import post_json  # noqa: E402
 
 

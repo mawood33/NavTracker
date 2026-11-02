@@ -30,6 +30,7 @@ from analytics.domain.correlation import (
 from analytics.domain.geo import haversine_meters
 from analytics.domain.positions import (
     missing_text,
+    movement_heading,
     parse_cat,
     parse_correlates,
     parse_ellipse,
@@ -254,6 +255,8 @@ def _record_message(
         fill_speed = act_speed
     if fill_heading is None:
         fill_heading = act_heading
+    if fill_heading is None:
+        fill_heading = movement_heading(activity)
     halted = halted or act_halt
     if speed is None:
         speed = fill_speed

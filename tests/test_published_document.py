@@ -1,7 +1,5 @@
-"""Schema 2 documents shared by HTTP, WebSocket, OGC, and the push adapter."""
+"""Schema 2 documents shared by HTTP, WebSocket, and OGC."""
 
-import asyncio
-import json
 from datetime import UTC, datetime, timedelta
 
 from tests.test_analytics_reports import _settings
@@ -12,7 +10,6 @@ from analytics.domain.grid import CellActivity
 from analytics.domain.outputs import SCHEMA_VERSION, diff_documents
 from analytics.domain.reference import Msr, Site
 from analytics.domain.tracks import GpsFix
-from analytics.infrastructure.frontend import FrontendPublisher
 from analytics.infrastructure.http_api import route_request
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -215,22 +212,14 @@ def test_direct_diff_emits_remove_when_a_site_disappears():
     assert diff_documents(current, current) is None
 
 
-def test_push_adapter_receives_the_schema_2_snapshot():
+def test_snapshot_keeps_the_schema_2_fields_a_consumer_reads():
     service = _service()
     document = service.publish_output()
     assert document is not None
-    sent: list[bytes] = []
-
-    async def post(_url: str, body: bytes) -> None:
-        sent.append(body)
-
-    publisher = FrontendPublisher("http://frontend.example/ingest", post=post)
-    asyncio.run(publisher.publish(document))
-    posted = json.loads(sent[0])
-    assert posted["schema_version"] == 2
-    assert posted["sites"][0]["assessment"] == "confirmed"
-    assert posted["sites"][0]["assessed_level"] == "confirmed"
-    assert posted["sites"][0]["basis"] == "single_source"
-    assert posted["sites"][0]["disagreement"] is False
-    assert posted["sites"][0]["status"] == "active"
-    assert posted["tracks"][0]["vehicle_id"] == "truck"
+    assert document["schema_version"] == 2
+    assert document["sites"][0]["assessment"] == "confirmed"
+    assert document["sites"][0]["assessed_level"] == "confirmed"
+    assert document["sites"][0]["basis"] == "single_source"
+    assert document["sites"][0]["disagreement"] is False
+    assert document["sites"][0]["status"] == "active"
+    assert document["tracks"][0]["vehicle_id"] == "truck"

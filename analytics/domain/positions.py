@@ -43,9 +43,25 @@ _HEADING = re.compile(
 )
 _HALT = re.compile(r"\bhalt\b", re.IGNORECASE)
 _IVO = re.compile(r"\bIVO\s+(.+)$", re.IGNORECASE)
-_CARDINAL = re.compile(
-    r"\b(NORTH(?:EAST|WEST)?|SOUTH(?:EAST|WEST)?|EAST|WEST"
-    r"|NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW|NE|SE|SW|NW|N|E|S|W)\b",
+# Longer compass names come first so ``NE`` is not read as ``N``.
+_COMPASS_TOKEN = (
+    r"NORTH(?:EAST|WEST)?|SOUTH(?:EAST|WEST)?|EAST|WEST"
+    r"|NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW|NE|SE|SW|NW|N|E|S|W"
+)
+# The companion TACREP movement field is the third ``//`` field
+# (``activity`` in ``_MTI_FIELDS``). Allowed values are a mover count
+# such as ``1 MVR`` or ``MVR``, an optional ``HALT``, a stationary or
+# other activity word, and an optional trailing compass token
+# (``1 MVR N``). A slash such as ``W/`` is not that token.
+_MOVEMENT_WORD = (
+    r"SLOWDOWN|SLOWING|STOPPING|STOPPED|STATIONARY|MOVEMENT|MOVER"
+    r"|MILLING|ROTATOR|SLOW|STOP|MILL|HALT|MVR"
+)
+_MOVEMENT_FIELD = re.compile(
+    rf"^(?:(?P<count>\d+)\s+)?"
+    rf"(?P<word>{_MOVEMENT_WORD})"
+    rf"(?:\s+HALT)?"
+    rf"(?:\s+(?P<compass>{_COMPASS_TOKEN}))?$",
     re.IGNORECASE,
 )
 _CARDINAL_DEGREES = {
@@ -278,9 +294,10 @@ def parse_fillins(text: str) -> tuple[int | None, float | None, float | None, bo
 
     A speed without a unit is ignored. ``mph`` is miles per hour.
     ``3 VEHICLES`` and ``1 MVR`` both set the count. A numeric heading
-    wins. Otherwise an 8-point or 16-point cardinal (``SW``, ``NNE``)
-    becomes degrees clockwise from true north. Words after ``IVO`` are
-    a place name, not a heading.
+    (``HDG`` or ``heading``) wins. A lone compass letter is not read
+    here: ``3 VEH W/ TRAILER`` and a remark such as ``SW`` are not
+    headings. Compass direction comes from the movement field.
+    Words after ``IVO`` are a place name.
     """
 
     if missing_text(text):
@@ -297,9 +314,34 @@ def parse_fillins(text: str) -> tuple[int | None, float | None, float | None, bo
     heading_match = _HEADING.search(text)
     if heading_match is not None:
         heading = float(heading_match.group(1)) % 360
-    else:
-        heading = cardinal_heading(_without_ivo(text))
     return count, speed, heading, _HALT.search(text) is not None
+
+
+def movement_heading(text: str) -> float | None:
+    """Degrees from north when the movement field ends in a compass token.
+
+    The field is one ``//``-delimited value, for example ``1 MVR N``,
+    ``MVR``, ``1 MVR HALT``, or ``STATIONARY``. ``W/`` in another phrase
+    is not a direction.
+    """
+
+    if missing_text(text):
+        return None
+    match = _MOVEMENT_FIELD.fullmatch(text.strip())
+    if match is None:
+        return None
+    compass = match.group("compass")
+    if not compass:
+        return None
+    return _CARDINAL_DEGREES[compass.upper()]
+
+
+def is_movement_field(text: str) -> bool:
+    """True when ``text`` is one allowed movement-field value."""
+
+    if missing_text(text):
+        return False
+    return _MOVEMENT_FIELD.fullmatch(text.strip()) is not None
 
 
 def parse_ivo(text: str) -> str:
@@ -314,24 +356,6 @@ def parse_ivo(text: str) -> str:
     if missing_text(name):
         return ""
     return name
-
-
-def cardinal_heading(text: str) -> float | None:
-    """Read one 8-point or 16-point compass token as degrees from north."""
-
-    if missing_text(text):
-        return None
-    match = _CARDINAL.search(text)
-    if match is None:
-        return None
-    return _CARDINAL_DEGREES[match.group(1).upper()]
-
-
-def _without_ivo(text: str) -> str:
-    match = _IVO.search(text)
-    if match is None:
-        return text
-    return text[: match.start()]
 
 
 def parse_correlates(text: str) -> tuple[str, ...]:

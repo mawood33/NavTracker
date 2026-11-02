@@ -10,14 +10,14 @@ from tests.test_analytics_reports import _settings
 from analytics.composition import wire_service as AnalyticsService
 from analytics.domain.coordcard import CoordCard
 from analytics.domain.correlation import correlate
-from analytics.domain.positions import parse_fillins
+from analytics.domain.positions import is_movement_field, movement_heading, parse_fillins
 from analytics.domain.tacrep_parse import parse_tacrep_body
 from analytics.domain.tracks import canonical_link16, link16_vehicle_id
 
 T0 = datetime(2026, 1, 1, 20, 0, tzinfo=UTC)
 CARD = Path("config/analytics/coord_card.example.yaml").read_text(encoding="utf-8")
 MOVING = (
-    "REAPER 21//TACREP 1//1 MVR//BULL-1//01000//N3712.34 E12812.34//"
+    "REAPER 21//TACREP 1//1 MVR SW//BULL-1//01000//N3712.34 E12812.34//"
     "MSR BURGUNDY//-//1910Z//1 MVR, 9 MPH, SW IVO 10105"
 )
 HALT = (
@@ -62,8 +62,81 @@ def test_halt_has_no_speed_or_heading_and_still_counts_the_mover():
     assert ("ivo", "10105") in message.attributes
     count, speed, heading, halted = parse_fillins("1 MVR HALT IVO NORTH PAD")
     assert (count, speed, heading, halted) == (1, None, None, True)
-    assert parse_fillins("1 MVR, 9 MPH, NNE")[2] == 22.5
+    assert parse_fillins("1 MVR, 9 MPH, NNE")[2] is None
+    assert parse_fillins("3 VEH W/ TRAILER")[2] is None
     assert parse_fillins("3 VEHICLES 25 MPH HDG 270 SW")[2] == 270
+
+
+def test_compass_heading_comes_only_from_the_movement_field():
+    assert movement_heading("1 MVR N") == 0
+    assert movement_heading("1 MVR NE") == 45
+    assert movement_heading("1 MVR E") == 90
+    assert movement_heading("1 MVR SE") == 135
+    assert movement_heading("1 MVR S") == 180
+    assert movement_heading("1 MVR SW") == 225
+    assert movement_heading("1 MVR W") == 270
+    assert movement_heading("1 MVR NW") == 315
+    assert movement_heading("MVR NNE") == 22.5
+    assert movement_heading("1 MVR") is None
+    assert movement_heading("MVR") is None
+    assert movement_heading("1 MVR HALT") is None
+    assert movement_heading("STATIONARY") is None
+    assert movement_heading("HALT") is None
+    assert movement_heading("STOP") is None
+    assert movement_heading("MILL") is None
+    assert movement_heading("ROTATOR") is None
+    assert movement_heading("SLOW") is None
+    for text in (
+        "1 MVR",
+        "1 MVR N",
+        "1 MVR HALT",
+        "MVR",
+        "STATIONARY",
+        "HALT",
+        "STOP",
+        "STOPPED",
+        "MILL",
+        "MILLING",
+        "ROTATOR",
+        "SLOW",
+        "SLOWING",
+        "SLOWDOWN",
+        "MOVEMENT",
+        "MOVER",
+    ):
+        assert is_movement_field(text) is True
+    assert is_movement_field("3 VEH W/ TRAILER") is False
+    assert movement_heading("3 VEH W/ TRAILER") is None
+    assert movement_heading("seen W of the pad") is None
+    remarks = MOVING.replace("//1 MVR SW//", "//1 MVR//").replace(
+        "1 MVR, 9 MPH, SW IVO 10105",
+        "3 VEH W/ TRAILER, seen N of the pad",
+    )
+    plain = _parse(remarks)[0]
+    assert plain.heading is None
+    assert _parse(MOVING)[0].heading == 225
+
+
+def test_j_report_with_link16_is_not_a_track_and_does_not_join_by_id():
+    text = (
+        "REAPER 21//J-401//1 MVR//BULL-1//01000//N3712.34 E12812.34//"
+        "MSR BURGUNDY//-//1910Z//1 MVR"
+    )
+    message = _parse(text)[0]
+    assert message.kind == "J"
+    assert message.serial_base == "J-401"
+    assert ("link16", "01000") in message.attributes
+    service = AnalyticsService(
+        _settings(
+            environment="development",
+            coord_card_path="config/analytics/coord_card.example.yaml",
+        )
+    )
+    service.ingest_tacrep_body(text, "dev")
+    assert service.tracks() == []
+    far = replace(message, cell_id="far")
+    near = replace(message, cell_id="near")
+    assert len(correlate((near, far))) == 2
 
 
 def test_tacrep_id_parses_on_an_empty_card_and_does_not_collapse_the_series():

@@ -4,7 +4,7 @@ Adapters live under ``analytics.infrastructure`` and are wired in
 ``analytics.composition``. This module does not import them.
 """
 
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Awaitable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -100,11 +100,6 @@ class ReportPoller(Protocol):
 class ReportSource(Protocol):
     async def poll(self) -> list[Report]:
         """Return newly observed reports. Does not have to be called at import."""
-
-
-class DocumentSink(Protocol):
-    async def publish(self, document: Mapping[str, object]) -> None:
-        """Deliver one snapshot or diff. Called only after analysis."""
 
 
 class ChatConnectionError(Exception):

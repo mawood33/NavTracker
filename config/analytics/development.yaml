@@ -87,10 +87,6 @@ clairvoyant:
   api_key: ""
   report_layers: []
 
-frontend:
-  enabled: false
-  ingest_url: ""
-
 reference:
   columns:
     name: "Name/ID"

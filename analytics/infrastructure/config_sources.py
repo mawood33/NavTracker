@@ -1,4 +1,4 @@
-"""ChatSurfer, Clairvoyant, crypto, frontend, and reference columns."""
+"""ChatSurfer, Clairvoyant, crypto, and reference columns."""
 
 import os
 
@@ -7,7 +7,6 @@ from analytics.domain.columns import ColumnMap
 from analytics.infrastructure.config_values import (
     _bool_setting,
     _choice,
-    _nested,
     _non_negative,
     _positive,
     _string_list,
@@ -106,8 +105,6 @@ def _columns(reference: dict[str, object]) -> ColumnMap:
             columns = columns.override(field, str(raw[key]))
     return columns
 
-def _frontend_block(loaded: dict[str, object]) -> dict[str, object]:
-    return _nested(loaded.get("frontend"), "frontend")
 
 def _chat_read_enabled(
     environment: str,
@@ -143,7 +140,6 @@ def source_settings(
     crypto: dict[str, object],
     clairvoyant: dict[str, object],
     reference: dict[str, object],
-    loaded: dict[str, object],
     *,
     mode: str,
     encryption_cert: str,
@@ -361,17 +357,5 @@ def source_settings(
                     "CLAIRVOYANT_REPORT_LAYERS",
                     clairvoyant.get("report_layers"),
                 ),
-        "frontend_enabled": _bool_setting(
-                    "ANALYTICS_FRONTEND_ENABLED",
-                    pick_setting(
-                        "ANALYTICS_FRONTEND_ENABLED",
-                        _frontend_block(loaded).get("enabled"),
-                        False,
-                    ),
-                ),
-        "frontend_ingest_url": env_setting(
-                    "ANALYTICS_FRONTEND_INGEST_URL",
-                    str(_frontend_block(loaded).get("ingest_url", "")),
-                ).strip(),
         "columns": _columns(reference),
     }

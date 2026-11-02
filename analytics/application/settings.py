@@ -66,8 +66,6 @@ class AnalyticsSettings:
     routing_snap_meters: float
     routing_join_meters: float
     routing_profiles: tuple[VehicleProfile, ...]
-    frontend_enabled: bool
-    frontend_ingest_url: str
     public_base_url: str
     columns: ColumnMap
     correlation: CorrelationPolicy = CorrelationPolicy()

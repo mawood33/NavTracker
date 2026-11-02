@@ -24,7 +24,7 @@ that file exists. A variable already set in the environment is kept.
 `fixtures/dev/tacrep_track.txt` is five MTI lines in the companion shape:
 
 ```text
-REAPER 21//TACREP 1//1 MVR//BULL-1//01000//N3712.34 E12812.34//MSR BURGUNDY//-//1910Z//1 MVR, 9 MPH, SW IVO 10105
+REAPER 21//TACREP 1//1 MVR SW//BULL-1//01000//N3712.34 E12812.34//MSR BURGUNDY//-//1910Z//1 MVR, 9 MPH, SW IVO 10105
 REAPER 21//TACREP 2//1 MVR HALT//BULL-1//01000//N3713.10 E12812.00//MSR BURGUNDY//-//1915Z//1 MVR HALT IVO 10105
 ```
 
@@ -34,7 +34,7 @@ A track number is exactly five letters or digits, kept as written aside
 from upper case (`A1B2C` and `a1b2c` are `link16:A1B2C`). It is not a
 decimal or octal number, and it is not zero-padded: `1000` is four
 characters, so that field is ignored and a warning is logged. REAPER 22
-uses `01001`. `1 MVR` is one moving vehicle. `SW` is heading 225. `9 MPH`
+uses `01001`. `1 MVR` is one moving vehicle. The movement field `1 MVR SW` is heading 225. `SW` in the fill-ins is not a heading. `9 MPH`
 is stored as meters per second. `1 MVR HALT` has no speed or direction;
 the track point is 0 m/s. `IVO 10105` is the place name.
 `MSR BURGUNDY` is the route. The two halts at 1915Z and 1920Z are five

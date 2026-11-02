@@ -135,12 +135,7 @@ class AnalysisLoop:
                     await asyncio.to_thread(step)
                     await self._publish.publish_if_configured()
                     await self._publish.publish_routed()
-                    message = self._publish.publish_output()
-                    if message is not None and self._state.frontend is not None:
-                        try:
-                            await self._state.frontend.publish(message)
-                        except Exception:
-                            logger.exception("Frontend publication failed")
+                    self._publish.publish_output()
             except asyncio.CancelledError:
                 raise
             except Exception:

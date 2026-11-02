@@ -547,7 +547,9 @@ def _track_fix(message: TacrepMessage) -> GpsFix | None:
     """
 
     vehicle = link16_vehicle_id(message.attributes)
-    if not vehicle:
+    # J-### reports keep their previous track behavior. Only the companion
+    # ``TACREP <n>`` series becomes a GPS fix from a LINK-16 number.
+    if not vehicle or not message.serial_base.startswith("TACREP-"):
         return None
     speed = message.speed_mps
     if speed is None and "halt" in message.events:

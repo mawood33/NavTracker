@@ -6,8 +6,8 @@ from pathlib import Path
 from tests.test_analytics_reports import _settings
 
 from analytics.composition import wire_service as AnalyticsService
-from analytics.domain.replay_files import read_navixy_file, read_tacrep_file, tacrep_texts
 from analytics.infrastructure.http_api import encode_response, route_request
+from analytics.infrastructure.replay_files import read_navixy_file, read_tacrep_file, tacrep_texts
 
 
 def test_readers_accept_txt_json_csv_and_navixy_state_batch(tmp_path: Path):
@@ -32,29 +32,52 @@ def test_cors_header_is_added_only_for_an_allowed_origin():
     assert b"Access-Control-Allow-Headers: Authorization, Content-Type\r\n" in allowed
 
 
+_DEV = {"authorization": "Bearer dev"}
+
+
 def test_dev_routes_are_hidden_outside_development():
-    service = AnalyticsService(_settings(environment="staging"))
+    service = AnalyticsService(_settings(environment="staging", write_token="dev"))
     status, payload, _content = route_request(
         "POST",
         "/v1/dev/fixes",
         b"{}",
-        {},
+        _DEV,
         service,
     )
     assert status == 404
     assert payload["error"] == "not found"
-    hidden = route_request("POST", "/v1/dev/analyze", b"", {}, service)
+    hidden = route_request("POST", "/v1/dev/analyze", b"", _DEV, service)
     assert hidden[0] == 404
 
 
+def test_dev_routes_require_the_write_token():
+    service = AnalyticsService(_settings(environment="development", write_token="dev"))
+    missing = route_request("POST", "/v1/dev/fixes", b"{}", {}, service)
+    assert missing[0] == 401
+    wrong = route_request(
+        "POST",
+        "/v1/dev/analyze",
+        b"",
+        {"authorization": "Bearer other"},
+        service,
+    )
+    assert wrong[0] == 401
+
+
 def test_dev_fixes_load_navixy_and_analyze():
-    service = AnalyticsService(_settings(environment="development"))
+    service = AnalyticsService(_settings(environment="development", write_token="dev"))
     body = Path("fixtures/dev/navixy_halt.json").read_bytes()
-    status, payload, _content = route_request("POST", "/v1/dev/fixes", body, {}, service)
+    status, payload, _content = route_request(
+        "POST",
+        "/v1/dev/fixes",
+        body,
+        _DEV,
+        service,
+    )
     assert status == 200
     assert payload["accepted"] == 2
     assert {fix.vehicle_id for fix in service.tracks()} == {"21"}
-    again = route_request("POST", "/v1/dev/analyze", b"", {}, service)
+    again = route_request("POST", "/v1/dev/analyze", b"", _DEV, service)
     assert again[0] == 200
     assert again[1]["analyzed"] is True
     assert json.loads(json.dumps(payload))["accepted"] == 2

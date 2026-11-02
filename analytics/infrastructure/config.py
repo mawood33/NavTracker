@@ -98,7 +98,6 @@ def load_analytics_settings(
             crypto,
             clairvoyant,
             reference,
-            loaded,
             mode=mode,
             encryption_cert=encryption_cert,
             clairvoyant_mode=clairvoyant_mode,
@@ -115,10 +114,6 @@ def load_analytics_settings(
     values.update(output_coord_settings(analytics))
     values.update(room_settings(analytics))
     settings = AnalyticsSettings(**values)  # type: ignore[arg-type]
-    if settings.frontend_enabled and not settings.frontend_ingest_url:
-        raise RuntimeError(
-            "ANALYTICS_FRONTEND_ENABLED=true requires ANALYTICS_FRONTEND_INGEST_URL."
-        )
     if settings.map_provider == "mapbox" and not settings.map_mapbox_token:
         raise RuntimeError(
             "NEXT_PUBLIC_MAP_PROVIDER=mapbox requires MAPBOX_PUBLIC_TOKEN."

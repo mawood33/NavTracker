@@ -8,7 +8,6 @@ from analytics.application.chat_read import ChatReadHealth
 from analytics.application.coordinates import load_override, override_file
 from analytics.application.hub import OutputHub
 from analytics.application.ports import (
-    DocumentSink,
     HexIndex,
     ReferenceFiles,
     ReportSource,
@@ -49,7 +48,6 @@ class AnalyticsState:
     settings: AnalyticsSettings
     chat: ChatSurferApiClient | None
     report_source: ReportSource | None
-    frontend: DocumentSink | None
     hub: OutputHub
     _references: ReferenceFiles
     _index: HexIndex
@@ -163,7 +161,6 @@ def make_state(
     settings: AnalyticsSettings,
     chat: ChatSurferApiClient | None,
     report_source: ReportSource | None,
-    frontend: DocumentSink | None,
     *,
     index: HexIndex,
     router: RouteEngine,
@@ -178,7 +175,6 @@ def make_state(
         settings=settings,
         chat=chat,
         report_source=report_source,
-        frontend=frontend,
         hub=hub or OutputHub(),
         _references=references,
         _index=index,

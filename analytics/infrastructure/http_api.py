@@ -7,7 +7,7 @@ from typing import Protocol
 from urllib.parse import parse_qs, unquote
 
 from analytics.application.events import area_document as _area
-from analytics.domain.access import AuthPolicy, authorize
+from analytics.domain.access import AuthPolicy, authorize, bearer_token
 from analytics.domain.aoi import AreaOfInterest
 from analytics.domain.export import (
     geojson_document,
@@ -31,6 +31,7 @@ from analytics.domain.reference import Evidence, Msr, Site
 from analytics.domain.reports import Report
 from analytics.domain.routing import RoutingError
 from analytics.domain.tracks import GpsFix
+from analytics.infrastructure.replay_files import fixes_from_navixy
 from navtracker_common.timeutil import format_zulu
 
 
@@ -198,6 +199,9 @@ class AnalyticsSnapshot(
 ):
     """Combined snapshot. Each handler is typed to the view it actually uses."""
 
+    def auth_policy(self) -> AuthPolicy:
+        """Read and write tokens for this process."""
+
 
 def route_request(
     method: str,
@@ -266,12 +270,14 @@ def route_request(
     if method == "POST" and target == "/v1/events/batch":
         return _ingest_events(body, headers, snapshot, batch=True, tacrep=False)
     if method == "POST" and target == "/v1/dev/fixes":
-        if not snapshot.dev_replay_enabled():
-            return _json(404, {"error": "not found"})
+        dev_denied = _dev_access(headers, snapshot)
+        if dev_denied is not None:
+            return dev_denied
         return _dev_fixes(body, snapshot)
     if method == "POST" and target == "/v1/dev/analyze":
-        if not snapshot.dev_replay_enabled():
-            return _json(404, {"error": "not found"})
+        dev_denied = _dev_access(headers, snapshot)
+        if dev_denied is not None:
+            return dev_denied
         return _json(200, dict(snapshot.analyze_now()))
     if method == "POST" and target == "/v1/coord-card/schema":
         return _coord_card_schema(body, headers, snapshot)
@@ -436,6 +442,21 @@ def _coord_card_schema(
         return _error(400, str(exc), "invalid_schema")
 
 
+def _dev_access(
+    headers: Mapping[str, str],
+    snapshot: AnalyticsSnapshot,
+) -> tuple[int, dict[str, object] | str, str] | None:
+    """Development routes stay hidden, and a write token is required."""
+
+    if not snapshot.dev_replay_enabled():
+        return _json(404, {"error": "not found"})
+    policy = snapshot.auth_policy()
+    token = bearer_token(headers, {})
+    if policy.write_token and token == policy.write_token:
+        return None
+    return _error(401, "unauthorized", "unauthorized")
+
+
 def _dev_fixes(
     body: bytes,
     snapshot: IngestView,
@@ -447,7 +468,7 @@ def _dev_fixes(
     except ValueError:
         return _error(400, "Expected JSON.", "invalid_json")
     try:
-        return _json(200, dict(snapshot.ingest_dev_fixes(payload)))
+        return _json(200, dict(snapshot.ingest_dev_fixes(fixes_from_navixy(payload))))
     except ValueError as exc:
         return _error(400, str(exc), "invalid_event")
 

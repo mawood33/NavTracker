@@ -754,11 +754,21 @@ def _joins(
 
 
 def _same_link16(left: TacrepMessage, right: TacrepMessage) -> bool:
-    """True when both reports name the same LINK-16 track."""
+    """Join companion TACREP lines that name the same LINK-16 track.
 
+    A ``J-###`` report keeps the distance and window rules. Sharing a
+    LINK-16 number does not pull it into a session on its own.
+    """
+
+    if not _companion_tacrep(left) or not _companion_tacrep(right):
+        return False
     left_id = link16_vehicle_id(left.attributes)
     right_id = link16_vehicle_id(right.attributes)
     return bool(left_id) and left_id == right_id
+
+
+def _companion_tacrep(message: TacrepMessage) -> bool:
+    return message.serial_base.startswith("TACREP-")
 
 
 def _near_cell(

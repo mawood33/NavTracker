@@ -1,9 +1,9 @@
 """Read TACREP text and Navixy JSON for development replay.
 
-File bytes stay here so the HTTP handler and the scripts share one
-parser. Navixy ``gps.speed`` is kilometers per hour and is converted to
-meters per second, the same conversion as live ingest. A replay object
-that already has ``speed_mps`` is left in meters per second.
+File bytes, CSV and JSON decoding, and the Navixy wire shape stay in
+infrastructure. Navixy ``gps.speed`` is kilometers per hour and is
+converted to meters per second, the same conversion as live ingest. A
+replay object that already has ``speed_mps`` is left in meters per second.
 """
 
 import csv

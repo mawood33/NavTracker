@@ -182,8 +182,6 @@ def _settings(**overrides: object) -> AnalyticsSettings:
         "routing_snap_meters": 500.0,
         "routing_join_meters": 40.0,
         "routing_profiles": (),
-        "frontend_enabled": False,
-        "frontend_ingest_url": "",
         "public_base_url": "",
         "columns": ColumnMap(),
     }
