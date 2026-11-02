@@ -1,12 +1,15 @@
 """Development replay files and the development-only HTTP routes."""
 
+import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from tests.test_analytics_reports import _settings
 
 from analytics.composition import wire_service as AnalyticsService
 from analytics.infrastructure.http_api import encode_response, route_request
+from analytics.infrastructure.http_server import serve
 from analytics.infrastructure.replay_files import read_navixy_file, read_tacrep_file, tacrep_texts
 
 
@@ -33,6 +36,63 @@ def test_cors_header_is_added_only_for_an_allowed_origin():
 
 
 _DEV = {"authorization": "Bearer dev"}
+
+
+def test_development_origins_answer_the_authorization_preflight():
+    async def scenario() -> None:
+        settings = replace(
+            _settings(read_token="dev", write_token="dev"),
+            http_port=0,
+            ws_origins=("http://localhost:8081", "http://127.0.0.1:8081"),
+        )
+        service = AnalyticsService(settings)
+        ready = asyncio.Event()
+        ports: list[int] = []
+
+        def on_listening(port: int) -> None:
+            ports.append(port)
+            ready.set()
+
+        task = asyncio.create_task(serve(settings, service, on_listening=on_listening))
+        try:
+            await asyncio.wait_for(ready.wait(), timeout=2)
+            text = await _exchange(
+                ports[0],
+                "OPTIONS /routing HTTP/1.1\r\n"
+                "Host: localhost:8080\r\n"
+                "Origin: http://localhost:8081\r\n"
+                "Access-Control-Request-Method: GET\r\n"
+                "Access-Control-Request-Headers: authorization\r\n"
+                "Connection: close\r\n\r\n",
+            )
+            assert text.startswith("HTTP/1.1 204")
+            assert "Access-Control-Allow-Origin: http://localhost:8081" in text
+            assert "Access-Control-Allow-Headers: Authorization, Content-Type" in text
+            denied = await _exchange(
+                ports[0],
+                "GET /routing HTTP/1.1\r\n"
+                "Host: localhost:8080\r\n"
+                "Origin: http://localhost:8081\r\n"
+                "Authorization: Bearer nope\r\n"
+                "Connection: close\r\n\r\n",
+            )
+            assert denied.startswith("HTTP/1.1 401")
+            assert "Access-Control-Allow-Origin: http://localhost:8081" in denied
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+async def _exchange(port: int, request: str) -> str:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(request.encode())
+    await writer.drain()
+    data = await asyncio.wait_for(reader.read(8192), timeout=2)
+    writer.close()
+    await writer.wait_closed()
+    return data.decode("iso-8859-1", errors="replace")
 
 
 def test_dev_routes_are_hidden_outside_development():

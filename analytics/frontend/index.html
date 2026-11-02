@@ -13,8 +13,10 @@
   <h1>NavTracker analytics</h1>
   <p id="basemap">Basemap: waiting for the snapshot.</p>
   <p id="routing">Routing: waiting for the snapshot.</p>
+  <label>Token <input id="token" size="32" autocomplete="off" spellcheck="false"></label>
   <label>WebSocket <input id="ws" size="48" value="ws://localhost:8080/ws"></label>
   <button id="connect" type="button">Connect</button>
+  <p id="ws-status">WebSocket: closed</p>
   <h2>Sites</h2>
   <ul id="sites"></ul>
   <h2>Tracks</h2>
@@ -27,17 +29,39 @@
   <pre id="result"></pre>
   <script>
     const params = new URLSearchParams(location.search);
-    const token = params.get("token") || "";
+    const tokenKey = "navtracker.analytics.token";
+    const tokenInput = document.getElementById("token");
+    const queryToken = params.get("token");
+    if (queryToken) {
+      tokenInput.value = queryToken;
+      localStorage.setItem(tokenKey, queryToken);
+    } else {
+      tokenInput.value = localStorage.getItem(tokenKey) || "";
+    }
+    tokenInput.addEventListener("change", () => {
+      localStorage.setItem(tokenKey, tokenInput.value);
+    });
     const wsInput = document.getElementById("ws");
     if (params.get("ws")) {
-      let wsUrl = params.get("ws");
-      if (token && wsUrl.indexOf("token=") === -1) {
-        wsUrl += (wsUrl.indexOf("?") === -1 ? "?" : "&") + "token=" + encodeURIComponent(token);
-      }
-      wsInput.value = wsUrl;
+      wsInput.value = params.get("ws");
     }
     const api = params.get("api") || "http://localhost:8080";
+    const wsStatus = document.getElementById("ws-status");
     let socket;
+    function currentToken() {
+      return tokenInput.value.trim();
+    }
+    function setWsStatus(text) {
+      wsStatus.textContent = "WebSocket: " + text;
+    }
+    function wsUrlWithToken(raw) {
+      const token = currentToken();
+      if (!token || raw.indexOf("token=") !== -1) {
+        return raw;
+      }
+      const joiner = raw.indexOf("?") === -1 ? "?" : "&";
+      return raw + joiner + "token=" + encodeURIComponent(token);
+    }
     function trackItem(fix) {
       const item = document.createElement("li");
       item.textContent = fix.vehicle_id + " " + fix.lat + "," + fix.lon +
@@ -85,7 +109,15 @@
     }
     document.getElementById("connect").onclick = () => {
       if (socket) socket.close();
-      socket = new WebSocket(wsInput.value);
+      const url = wsUrlWithToken(wsInput.value.trim());
+      setWsStatus("connecting");
+      socket = new WebSocket(url);
+      socket.onopen = () => setWsStatus("open");
+      socket.onerror = () => setWsStatus("error");
+      socket.onclose = (event) => {
+        const reason = event.reason ? " " + event.reason : "";
+        setWsStatus("closed code " + event.code + reason);
+      };
       socket.onmessage = (event) => {
         render(JSON.parse(event.data));
       };
@@ -97,8 +129,14 @@
         profile: document.getElementById("profile").value || "truck"
       });
       const headers = {};
+      const token = currentToken();
       if (token) headers.Authorization = "Bearer " + token;
       const response = await fetch(api + "/routing?" + query.toString(), {headers: headers});
+      if (response.status === 401) {
+        document.getElementById("result").textContent =
+          "Unauthorized: check token matches ANALYTICS_READ_TOKEN";
+        return;
+      }
       document.getElementById("result").textContent = await response.text();
     };
   </script>
