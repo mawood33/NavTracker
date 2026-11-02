@@ -3,11 +3,16 @@
 analytics:
   http_host: "127.0.0.1"
   http_port: 8080
+  # Browser dashboard on port 8081. Staging and production leave this empty.
+  ws_origins:
+    - http://127.0.0.1:8081
+    - http://localhost:8081
   reference_dir: "/data/reference"
   publish_events: false
   analysis_interval_seconds: 30
   chat_poll_seconds: 15
-  # Navixy speeds copied into ChatSurfer messages are kilometers per hour.
+  # ChatSurfer speed field. kmh (default) or mps. The ingest worker
+  # reads the same ANALYTICS_CHAT_SPEED_UNIT. Internal speeds stay m/s.
   chat_speed_unit: kmh
   confidence:
     initial_confidence: 0.2
@@ -16,7 +21,7 @@ analytics:
     window_seconds: 86400
     decay_per_day: 0
   grid:
-    # H3 resolution 9 matches TransloadOracle h3_resolution (about a 174 m edge).
+    # H3 resolution 9 is about a 174 m edge.
     resolution: 9
     window_seconds: 86400
     decay_half_life_seconds: 0
@@ -81,10 +86,6 @@ clairvoyant:
   layer: "default"
   api_key: ""
   report_layers: []
-
-frontend:
-  enabled: false
-  ingest_url: ""
 
 reference:
   columns:

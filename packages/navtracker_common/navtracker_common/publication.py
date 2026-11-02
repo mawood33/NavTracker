@@ -11,7 +11,11 @@ SCHEMA_VERSION = 1
 
 @dataclass(frozen=True)
 class OutboundMessage:
-    """Versioned position document published to ChatSurfer."""
+    """Versioned position document published to ChatSurfer.
+
+    ``speed`` is in ``ANALYTICS_CHAT_SPEED_UNIT`` (``kmh`` by default,
+    or ``mps``). The tracker fix itself stores meters per second.
+    """
 
     schema_version: int
     tracker_id: int

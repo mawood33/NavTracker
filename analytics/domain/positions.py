@@ -29,7 +29,8 @@ _CLOCK = re.compile(
     re.IGNORECASE,
 )
 _VEHICLES = re.compile(
-    r"(?:(\d+)\s*(?:x\s*)?(?:veh(?:icle)?s?)\b|\bveh(?:icle)?s?\s*[:=]?\s*(\d+))",
+    r"(?:(\d+)\s*(?:x\s*)?(?:veh(?:icle)?s?|mvrs?)\b"
+    r"|\b(?:veh(?:icle)?s?|mvrs?)\s*[:=]?\s*(\d+))",
     re.IGNORECASE,
 )
 _SPEED = re.compile(
@@ -41,6 +42,54 @@ _HEADING = re.compile(
     re.IGNORECASE,
 )
 _HALT = re.compile(r"\bhalt\b", re.IGNORECASE)
+_IVO = re.compile(r"\bIVO\s+(.+)$", re.IGNORECASE)
+# Longer compass names come first so ``NE`` is not read as ``N``.
+_COMPASS_TOKEN = (
+    r"NORTH(?:EAST|WEST)?|SOUTH(?:EAST|WEST)?|EAST|WEST"
+    r"|NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW|NE|SE|SW|NW|N|E|S|W"
+)
+# The companion TACREP movement field is the third ``//`` field
+# (``activity`` in ``_MTI_FIELDS``). Allowed values are a mover count
+# such as ``1 MVR`` or ``MVR``, an optional ``HALT``, a stationary or
+# other activity word, and an optional trailing compass token
+# (``1 MVR N``). A slash such as ``W/`` is not that token.
+_MOVEMENT_WORD = (
+    r"SLOWDOWN|SLOWING|STOPPING|STOPPED|STATIONARY|MOVEMENT|MOVER"
+    r"|MILLING|ROTATOR|SLOW|STOP|MILL|HALT|MVR"
+)
+_MOVEMENT_FIELD = re.compile(
+    rf"^(?:(?P<count>\d+)\s+)?"
+    rf"(?P<word>{_MOVEMENT_WORD})"
+    rf"(?:\s+HALT)?"
+    rf"(?:\s+(?P<compass>{_COMPASS_TOKEN}))?$",
+    re.IGNORECASE,
+)
+_CARDINAL_DEGREES = {
+    "N": 0.0,
+    "NORTH": 0.0,
+    "NNE": 22.5,
+    "NE": 45.0,
+    "NORTHEAST": 45.0,
+    "ENE": 67.5,
+    "E": 90.0,
+    "EAST": 90.0,
+    "ESE": 112.5,
+    "SE": 135.0,
+    "SOUTHEAST": 135.0,
+    "SSE": 157.5,
+    "S": 180.0,
+    "SOUTH": 180.0,
+    "SSW": 202.5,
+    "SW": 225.0,
+    "SOUTHWEST": 225.0,
+    "WSW": 247.5,
+    "W": 270.0,
+    "WEST": 270.0,
+    "WNW": 292.5,
+    "NW": 315.0,
+    "NORTHWEST": 315.0,
+    "NNW": 337.5,
+}
 _CORR = re.compile(r"CORRELATES\s+TO\s+(.+)$", re.IGNORECASE)
 _SERIAL = re.compile(r"[A-Z]-\d{3}[A-Z]?")
 _TAI_MSR_SPLIT = re.compile(r"\s*(?:/|,|\band\b)\s*", re.IGNORECASE)
@@ -244,6 +293,11 @@ def parse_fillins(text: str) -> tuple[int | None, float | None, float | None, bo
     """Return vehicle count, speed in m/s, heading degrees, and HALT.
 
     A speed without a unit is ignored. ``mph`` is miles per hour.
+    ``3 VEHICLES`` and ``1 MVR`` both set the count. A numeric heading
+    (``HDG`` or ``heading``) wins. A lone compass letter is not read
+    here: ``3 VEH W/ TRAILER`` and a remark such as ``SW`` are not
+    headings. Compass direction comes from the movement field.
+    Words after ``IVO`` are a place name.
     """
 
     if missing_text(text):
@@ -261,6 +315,47 @@ def parse_fillins(text: str) -> tuple[int | None, float | None, float | None, bo
     if heading_match is not None:
         heading = float(heading_match.group(1)) % 360
     return count, speed, heading, _HALT.search(text) is not None
+
+
+def movement_heading(text: str) -> float | None:
+    """Degrees from north when the movement field ends in a compass token.
+
+    The field is one ``//``-delimited value, for example ``1 MVR N``,
+    ``MVR``, ``1 MVR HALT``, or ``STATIONARY``. ``W/`` in another phrase
+    is not a direction.
+    """
+
+    if missing_text(text):
+        return None
+    match = _MOVEMENT_FIELD.fullmatch(text.strip())
+    if match is None:
+        return None
+    compass = match.group("compass")
+    if not compass:
+        return None
+    return _CARDINAL_DEGREES[compass.upper()]
+
+
+def is_movement_field(text: str) -> bool:
+    """True when ``text`` is one allowed movement-field value."""
+
+    if missing_text(text):
+        return False
+    return _MOVEMENT_FIELD.fullmatch(text.strip()) is not None
+
+
+def parse_ivo(text: str) -> str:
+    """Return the place named by ``IVO <name>``, or an empty string."""
+
+    if missing_text(text):
+        return ""
+    match = _IVO.search(text.strip())
+    if match is None:
+        return ""
+    name = match.group(1).strip().strip("-").strip()
+    if missing_text(name):
+        return ""
+    return name
 
 
 def parse_correlates(text: str) -> tuple[str, ...]:

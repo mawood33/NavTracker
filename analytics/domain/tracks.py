@@ -1,8 +1,14 @@
+import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from analytics.domain.timeutil import ensure_utc, valid_position
+from navtracker_common.units import kmh_to_mps
+
+logger = logging.getLogger(__name__)
+_LINK16 = re.compile(r"^[A-Za-z0-9]{5}$")
 
 
 @dataclass(frozen=True)
@@ -141,7 +147,7 @@ def _speed(payload: Mapping[str, object], speed_unit: str) -> float | None:
     if speed is None:
         return None
     if speed_unit == "kmh":
-        return speed / 3.6
+        return kmh_to_mps(speed)
     return speed
 
 
@@ -156,6 +162,46 @@ def _timestamp(value: object) -> datetime | None:
     except ValueError:
         return None
     return ensure_utc(parsed)
+
+
+def canonical_link16(text: str) -> str:
+    """Return a LINK-16 track number, or empty when it is not one.
+
+    A track number is exactly five letters or digits. Case is folded to
+    upper. The characters are opaque: ``01000`` is not ``1000``, and the
+    value is not read as decimal or octal. A blank or ``-`` is empty.
+    Any other token is empty so the caller can ignore the field.
+    """
+
+    token = text.strip()
+    if token == "" or token == "-":
+        return ""
+    if _LINK16.fullmatch(token) is None:
+        return ""
+    return token.upper()
+
+
+def link16_vehicle_id(attributes: Sequence[tuple[str, str]]) -> str:
+    """Return ``link16:<id>`` when the attribute is a 5-character track number.
+
+    A present value that is not exactly five letters or digits is ignored
+    and logged. It does not become a track.
+    """
+
+    for key, value in attributes:
+        if key != "link16":
+            continue
+        canonical = canonical_link16(value)
+        if canonical:
+            return f"link16:{canonical}"
+        token = value.strip()
+        if token and token != "-":
+            logger.warning(
+                "Ignoring LINK-16 track number %r; expected exactly 5 letters or digits",
+                token,
+            )
+        return ""
+    return ""
 
 
 def seconds_between(start: datetime, end: datetime) -> float:

@@ -33,6 +33,7 @@ from navtracker_common.timeutil import (
     set_account_timezone,
     zone_from_name,
 )
+from navtracker_common.units import DEFAULT_CHAT_SPEED_UNIT
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ class IngestionSupervisor:
         discovery_backoff_cap: float = DEFAULT_DISCOVERY_BACKOFF_CAP_SECONDS,
         seed_current_state: bool = True,
         account_timezone: str | None = None,
+        chat_speed_unit: str = DEFAULT_CHAT_SPEED_UNIT,
     ):
         self.reader = reader
         self.stream = stream
@@ -123,6 +125,7 @@ class IngestionSupervisor:
             max_attempts=publish_attempts,
             backoff_initial=publish_backoff_initial,
             backoff_cap=publish_backoff_cap,
+            speed_unit=chat_speed_unit,
         )
 
     async def run(self) -> None:

@@ -12,7 +12,7 @@ from analytics.application.ports import RoomPublisher
 from analytics.application.publishing import PublishService
 from analytics.application.query import QueryService
 from analytics.application.routing import RoutingService
-from analytics.application.service import AnalyticsService, DocumentSink, ReportSource
+from analytics.application.service import AnalyticsService, ReportSource
 from analytics.application.state import make_state
 from analytics.domain.routing import RouteCache
 from analytics.infrastructure.chat_ws import ChatStompStream
@@ -22,7 +22,6 @@ from analytics.infrastructure.clairvoyant import (
     ClairvoyantWebSocket,
 )
 from analytics.infrastructure.config import AnalyticsSettings
-from analytics.infrastructure.frontend import FrontendPublisher
 from analytics.infrastructure.h3_index import H3Index
 from analytics.infrastructure.mgrs_grid import MgrsLibrary
 from analytics.infrastructure.reference_parse import FileReferences
@@ -43,7 +42,6 @@ class AnalyticsApplication:
     clairvoyant_reader: ClairvoyantApiClient | None
     clairvoyant_stream: ClairvoyantWebSocket | None
     report_client: ClairvoyantReportClient | None
-    frontend: FrontendPublisher | None
 
     async def aclose(self) -> None:
         if self.chat is not None:
@@ -52,15 +50,12 @@ class AnalyticsApplication:
             await self.clairvoyant_reader.close()
         if self.report_client is not None:
             await self.report_client.close()
-        if self.frontend is not None:
-            await self.frontend.close()
 
 
 def wire_service(
     settings: AnalyticsSettings,
     chat: ChatSurferApiClient | None = None,
     report_source: ReportSource | None = None,
-    frontend: DocumentSink | None = None,
     publisher: RoomPublisher | None = None,
 ) -> AnalyticsService:
     """Composition root. Application code does not import these adapters."""
@@ -71,7 +66,6 @@ def wire_service(
         settings,
         chat,
         report_source,
-        frontend,
         index=H3Index(settings.grid.resolution),
         router=build_router(
             settings.routing_engine,
@@ -126,9 +120,11 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
     """Construct clients and the analyzer. Does not bind, connect, or publish."""
 
     crypto_handler = _crypto(settings)
+    # read_rooms names truth rooms. The client is built only when a read
+    # or a publish will use it, so development can start with reads off
+    # and without a ChatSurfer certificate.
     needs_chat = (
         settings.chat_read_enabled
-        or bool(settings.read_rooms)
         or settings.publish_events
         or bool(settings.tacrep_rooms)
         or bool(settings.default_ingest_rooms)
@@ -177,18 +173,14 @@ def build_analytics(settings: AnalyticsSettings) -> AnalyticsApplication:
             layers=settings.clairvoyant_report_layers,
             policy=settings.report_policy,
         )
-    frontend: FrontendPublisher | None = None
-    if settings.frontend_enabled:
-        frontend = FrontendPublisher(settings.frontend_ingest_url)
     return AnalyticsApplication(
         settings=settings,
         crypto_handler=crypto_handler,
         chat=chat,
-        service=wire_service(settings, chat, report_client, frontend),
+        service=wire_service(settings, chat, report_client),
         clairvoyant_reader=reader,
         clairvoyant_stream=stream,
         report_client=report_client,
-        frontend=frontend,
     )
 
 

@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import UTC, datetime
 
 from tests.test_analytics_reports import _settings
@@ -8,7 +7,6 @@ from analytics.composition import wire_service as AnalyticsService
 from analytics.domain.export import kml_network_link
 from analytics.domain.outputs import items_document, parse_datetime_interval
 from analytics.domain.reference import Evidence, Site
-from analytics.infrastructure.frontend import FrontendPublisher
 from analytics.infrastructure.http_api import route_request
 from analytics.infrastructure.websocket import (
     OutputHub,
@@ -85,34 +83,14 @@ def test_network_link_points_at_the_kml_document():
     assert "NetworkLink" in str(payload)
 
 
-def test_frontend_publisher_posts_the_document_through_the_fake():
-    sent: list[tuple[str, bytes]] = []
-
-    async def post(url: str, body: bytes) -> None:
-        sent.append((url, body))
-
-    publisher = FrontendPublisher("http://frontend.example/ingest", post=post)
-    asyncio.run(publisher.publish({"schema_version": 1, "type": "snapshot"}))
-    url, body = sent[0]
-    assert url == "http://frontend.example/ingest"
-    assert json.loads(body)["type"] == "snapshot"
-
-
 def test_analysis_publishes_a_snapshot_once_when_nothing_changes():
-    received: list[dict[str, object]] = []
-
-    class _Sink:
-        async def publish(self, document: dict[str, object]) -> None:
-            received.append(document)
-
-    service = AnalyticsService(_settings(), None, frontend=_Sink())
+    service = AnalyticsService(_settings())
     service.analyze()
     first = service.publish_output()
     second = service.publish_output()
     assert first is not None and first["type"] == "snapshot"
     assert second is None
-    asyncio.run(service.frontend.publish(first))  # type: ignore[union-attr]
-    assert received[0]["schema"] == "navtracker.analytics"
+    assert first["schema"] == "navtracker.analytics"
 
 
 class _Public:

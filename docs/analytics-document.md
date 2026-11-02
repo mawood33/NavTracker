@@ -116,7 +116,7 @@ The body uses the same keys as the card (`coordinate_format`,
 clears the override. The file is `output-coordinates.json` in the
 reference directory and is loaded again on startup.
 
-TransloadOracle reads `effective.format` and `effective.source` to show
+An external client can read `effective.format` and `effective.source` to show
 the analyst toggle, and sends the PUT to change or revert it. A failed
 MGRS conversion, including a polar point the library cannot encode,
 publishes decimal lat/lon and logs a warning. UPS strings are used when
@@ -206,7 +206,7 @@ Drop every track whose `origin_id` equals `message_id`, and every track
 listed in `tracks`. The stored snapshot used for a new WebSocket client
 drops those fixes immediately. The log line is the id only.
 
-## Push adapter
+## Consumers
 
-`analytics/infrastructure/frontend.py` POSTs this same document to
-`ANALYTICS_FRONTEND_INGEST_URL`. It does not reshape sites or tracks.
+A program such as TransloadOracle reads these documents from the HTTP API
+and the `/ws` stream. NavTracker does not push them.

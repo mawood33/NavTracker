@@ -3,12 +3,14 @@ import logging
 
 from app.composition import build_application
 from app.infrastructure.config import load_settings
+from navtracker_common.envfile import load_env_file
 from navtracker_common.logging_setup import configure_logging
 
 DEFAULT_LOG_FILE = "/app/logs/navtracker.log"
 
 
 async def main() -> None:
+    load_env_file()
     configure_logging(DEFAULT_LOG_FILE)
     settings = load_settings()
     app = build_application(settings)

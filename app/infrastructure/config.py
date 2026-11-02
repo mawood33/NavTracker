@@ -37,6 +37,7 @@ from navtracker_common.settings import (
     pick_setting as _pick,
 )
 from navtracker_common.timeutil import zone_from_name
+from navtracker_common.units import DEFAULT_CHAT_SPEED_UNIT, parse_chat_speed_unit
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class Settings:
     mode: str
     fernet_key: bytes | None
     navixy_timezone: str | None = None
+    chat_speed_unit: str = DEFAULT_CHAT_SPEED_UNIT
 
 def load_settings(config_dir: str | Path = "config") -> Settings:
     environment = os.getenv("APP_ENV", "development")
@@ -250,6 +252,13 @@ def load_settings(config_dir: str | Path = "config") -> Settings:
             )
         ),
         navixy_timezone=_navixy_timezone(),
+        chat_speed_unit=parse_chat_speed_unit(
+            _pick(
+                "ANALYTICS_CHAT_SPEED_UNIT",
+                chatsurfer.get("speed_unit"),
+                DEFAULT_CHAT_SPEED_UNIT,
+            )
+        ),
     )
     if settings.chatsurfer_encryption_required:
         encrypted_room_name(settings.chatsurfer_room_name_encrypted)

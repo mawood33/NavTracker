@@ -77,10 +77,6 @@ clairvoyant:
   failover_probe_interval_seconds: 60
   failover_healthy_window_seconds: 30
 
-frontend:
-  enabled: false
-  ingest_url: ""
-
 reference:
   columns:
     name: "Name/ID"

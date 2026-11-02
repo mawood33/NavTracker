@@ -14,7 +14,7 @@ from analytics.application.coordinates import override_file, save_override
 from analytics.application.hub import OutputHub
 from analytics.application.ingest import IngestService
 from analytics.application.loop import AnalysisLoop
-from analytics.application.ports import DocumentSink, ReportSource
+from analytics.application.ports import ReportSource
 from analytics.application.publishing import PublishService
 from analytics.application.query import QueryService
 from analytics.application.routing import RoutingService
@@ -28,9 +28,9 @@ from analytics.domain.grid import CellActivity
 from analytics.domain.level_assessment import LevelCatalog
 from analytics.domain.reference import Msr, Site
 from analytics.domain.reports import Report
-from analytics.domain.tracks import GpsFix
+from analytics.domain.tracks import GpsFix, fix_from_mapping
 
-__all__ = ["AnalyticsService", "DocumentSink", "ReportSource"]
+__all__ = ["AnalyticsService", "ReportSource"]
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +237,39 @@ class AnalyticsService:
         source_id: str = "",
     ) -> dict[str, object]:
         return self._ingest.ingest_batch(payload, source_id)
+
+    def dev_replay_enabled(self) -> bool:
+        return self._state.settings.environment == "development"
+
+    def ingest_dev_fixes(self, payload: object) -> dict[str, object]:
+        """Accept fix mappings that already use meters per second.
+
+        The HTTP adapter converts the Navixy wire shape before this call.
+        """
+
+        if not self.dev_replay_enabled():
+            raise PermissionError("dev replay is only available when APP_ENV=development")
+        items = payload if isinstance(payload, list) else []
+        fixes: list[GpsFix] = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            fix = fix_from_mapping(item, source="dev-replay", speed_unit="mps")
+            if fix is not None:
+                fixes.append(fix)
+        self.add_fixes(fixes)
+        self.analyze()
+        self.publish_output()
+        return {"accepted": len(fixes)}
+
+    def analyze_now(self) -> dict[str, object]:
+        """Run one analysis pass and broadcast. Development only."""
+
+        if not self.dev_replay_enabled():
+            raise PermissionError("dev replay is only available when APP_ENV=development")
+        self.analyze()
+        message = self.publish_output()
+        return {"analyzed": True, "broadcast": message is not None}
 
     def correlations_document(self) -> dict[str, object]:
         return self._query.correlations_document()

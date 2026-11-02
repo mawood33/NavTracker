@@ -1,0 +1,24 @@
+{
+  "type": "state_batch",
+  "event": "state_batch",
+  "data": [
+    {
+      "tracker_id": 21,
+      "gps": {
+        "updated": "2026-01-01T19:15:00Z",
+        "location": {"lat": 37.218333, "lng": 128.2},
+        "speed": 0,
+        "heading": 225
+      }
+    },
+    {
+      "tracker_id": 21,
+      "gps": {
+        "updated": "2026-01-01T19:20:00Z",
+        "location": {"lat": 37.218333, "lng": 128.2},
+        "speed": 36,
+        "heading": 225
+      }
+    }
+  ]
+}

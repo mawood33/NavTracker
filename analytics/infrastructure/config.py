@@ -22,9 +22,9 @@ from analytics.infrastructure.config_values import _bool_setting, _choice, _mapp
 from navtracker_common.chatsurfer import encrypted_room_name
 from navtracker_common.crypto import require_public_material
 from navtracker_common.settings import env_setting, pick_setting
+from navtracker_common.units import DEFAULT_CHAT_SPEED_UNIT, parse_chat_speed_unit
 
 _CRYPTO_MODES = {"pem", "ssh", "fernet"}
-_SPEED_UNITS = {"mps", "kmh"}
 _CLAIRVOYANT_MODES = {"websocket", "poll"}
 
 
@@ -82,14 +82,12 @@ def load_analytics_settings(
         raise RuntimeError(
             "Clairvoyant failover requires CLAIRVOYANT_BASE_URL."
         )
-    speed_unit = _choice(
-        "ANALYTICS_CHAT_SPEED_UNIT",
+    speed_unit = parse_chat_speed_unit(
         pick_setting(
             "ANALYTICS_CHAT_SPEED_UNIT",
             analytics.get("chat_speed_unit"),
-            "kmh",
-        ),
-        _SPEED_UNITS,
+            DEFAULT_CHAT_SPEED_UNIT,
+        )
     )
     values: dict[str, object] = {"environment": environment}
     values.update(http_settings(analytics))
@@ -100,7 +98,6 @@ def load_analytics_settings(
             crypto,
             clairvoyant,
             reference,
-            loaded,
             mode=mode,
             encryption_cert=encryption_cert,
             clairvoyant_mode=clairvoyant_mode,
@@ -117,10 +114,6 @@ def load_analytics_settings(
     values.update(output_coord_settings(analytics))
     values.update(room_settings(analytics))
     settings = AnalyticsSettings(**values)  # type: ignore[arg-type]
-    if settings.frontend_enabled and not settings.frontend_ingest_url:
-        raise RuntimeError(
-            "ANALYTICS_FRONTEND_ENABLED=true requires ANALYTICS_FRONTEND_INGEST_URL."
-        )
     if settings.map_provider == "mapbox" and not settings.map_mapbox_token:
         raise RuntimeError(
             "NEXT_PUBLIC_MAP_PROVIDER=mapbox requires MAPBOX_PUBLIC_TOKEN."

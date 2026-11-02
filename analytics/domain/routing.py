@@ -1,7 +1,7 @@
 """Route between two sites and estimate travel time.
 
-TransloadOracle's extracted routing contract is the default: provider
-``osrm`` or ``mapbox``, public OSRM at ``https://router.project-osrm.org``,
+The default provider is ``osrm`` or ``mapbox``, with public OSRM at
+``https://router.project-osrm.org``,
 and ETA minutes ``max(engine_minutes, miles / maxSpeedMph * 60)`` with
 ``maxSpeedMph`` capped at 120. Vehicle types are ``truck``,
 ``intermodal``, and ``rail`` (rail is rejected). Valhalla, GraphHopper,
@@ -99,7 +99,7 @@ def default_profiles() -> tuple[VehicleProfile, ...]:
 
 
 def reject_unsupported_vehicle(vehicle_type: str) -> None:
-    """Rail is named by TransloadOracle and is not routed."""
+    """Rail is not routed."""
 
     if vehicle_type.strip().lower() == "rail":
         raise RoutingError("Rail routing is not supported.", "rail_unsupported")

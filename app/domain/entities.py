@@ -7,7 +7,8 @@ class TrackerPosition:
     """A tracker fix. This is not the ChatSurfer payload.
 
     ``received_timestamp`` is the provider value before UTC normalization.
-    It is diagnostic only and is not published.
+    It is diagnostic only and is not published. ``speed`` is meters per
+    second. Navixy reports kilometers per hour; the parser converts it.
     """
 
     tracker_id: int

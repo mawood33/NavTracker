@@ -73,6 +73,7 @@ def build_application(settings: Settings) -> Application:
             settings.tracker_discovery_interval_seconds
         ),
         account_timezone=settings.navixy_timezone,
+        chat_speed_unit=settings.chat_speed_unit,
     )
     return Application(
         crypto_handler=crypto_handler,
