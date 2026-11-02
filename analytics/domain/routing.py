@@ -1,8 +1,6 @@
 """Route between two sites and estimate travel time.
 
-The default routing contract was extracted from TransloadOracle and now
-lives here. NavTracker does not call TransloadOracle to route. The
-default is provider ``osrm`` or ``mapbox``, public OSRM at
+The default provider is ``osrm`` or ``mapbox``, with public OSRM at
 ``https://router.project-osrm.org``,
 and ETA minutes ``max(engine_minutes, miles / maxSpeedMph * 60)`` with
 ``maxSpeedMph`` capped at 120. Vehicle types are ``truck``,
@@ -101,7 +99,7 @@ def default_profiles() -> tuple[VehicleProfile, ...]:
 
 
 def reject_unsupported_vehicle(vehicle_type: str) -> None:
-    """Rail is named by TransloadOracle and is not routed."""
+    """Rail is not routed."""
 
     if vehicle_type.strip().lower() == "rail":
         raise RoutingError("Rail routing is not supported.", "rail_unsupported")

@@ -6,7 +6,7 @@ analytics:
   publish_events: true
   analysis_interval_seconds: 30
   chat_poll_seconds: 15
-  chat_speed_unit: kmh
+  chat_speed_unit: mps
   confidence:
     initial_confidence: 0.2
     probable_at: 0.55
@@ -80,10 +80,6 @@ clairvoyant:
 frontend:
   enabled: false
   ingest_url: ""
-
-transload_oracle:
-  enabled: false
-  base_url: ""
 
 reference:
   columns:

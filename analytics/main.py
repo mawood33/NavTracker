@@ -19,12 +19,11 @@ def main() -> None:
     app = build_analytics(settings)
     app.service.load_reference()
     logger.info(
-        "Analytics startup env=%s clairvoyant=%s mode=%s rooms=%s transload_oracle=%s",
+        "Analytics startup env=%s clairvoyant=%s mode=%s rooms=%s",
         settings.environment,
         settings.clairvoyant_enabled,
         settings.clairvoyant_mode,
         list(truth_read_rooms(settings)),
-        "enabled" if settings.transload_oracle_enabled else "disabled",
     )
 
     async def _run() -> None:

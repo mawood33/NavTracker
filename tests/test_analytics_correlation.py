@@ -249,7 +249,7 @@ def test_speed_cap_and_mapbox_token_stay_out_of_errors():
     assert "pk.test-token" not in json.dumps({k: v for k, v in dark.items() if k != "tile_url"})
 
 
-def test_transload_oracle_http_contract(tmp_path: Path):
+def test_analytics_http_contract(tmp_path: Path):
     reference = tmp_path / "reference"
     reference.mkdir()
     (reference / "sites.kml").write_text(
@@ -347,7 +347,7 @@ def test_transload_oracle_http_contract(tmp_path: Path):
     assert "A" in names
 
 
-def test_checked_in_defaults_match_transload_oracle():
+def test_checked_in_analytics_defaults():
     settings = validate_analytics_environment("development")
     assert settings.grid.resolution == 9
     assert settings.map_provider == "leaflet"
@@ -374,8 +374,7 @@ def test_checked_in_defaults_match_transload_oracle():
     assert production.routing_engine == "msr"
     assert production.http_host == "127.0.0.1"
     assert settings.max_fixes_per_vehicle == 100
-    assert settings.transload_oracle_enabled is False
-    assert settings.transload_oracle_base_url == ""
+    assert settings.chat_speed_unit == "mps"
 
 
 def test_mapbox_settings_require_a_token(monkeypatch: pytest.MonkeyPatch):

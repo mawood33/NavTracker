@@ -11,7 +11,7 @@ match the pattern use a hash of the source and the raw line.
 
 Exercise block ranges come from a coord card, not from hardcoded
 numbers. The card's type name, kind letter, and range classify the id.
-``O``, ``J``, and ``E`` still use their TransloadOracle type names when
+``O``, ``J``, and ``E`` still use their built-in type names when
 the card does not list that letter. A serial outside its block, or a
 kind letter that contradicts the declared kind, is accepted and flagged.
 
@@ -27,8 +27,7 @@ neighbor. Reports that share a LINK-16 track number join the same
 session inside that window even when the cells are far apart. Pair
 score is ``0.45 * same_subject + 0.35 * spatial + 0.20 * time``. The
 subject term counts only an explicit subject.
-``minimum_transload_speed_mps`` is stored and is not used. These
-rules live in NavTracker. Nothing here calls TransloadOracle.
+``minimum_transload_speed_mps`` is stored and is not used.
 """
 
 import hashlib
@@ -99,7 +98,7 @@ DEFAULT_BLOCKS: tuple[TacrepBlock, ...] = ()
 
 @dataclass(frozen=True)
 class CorrelationPolicy:
-    """Defaults copied from the extracted TransloadOracle rules."""
+    """Activity and correlation defaults."""
 
     window_minutes: float = 45.0
     hide_gap_minutes: float = 20.0

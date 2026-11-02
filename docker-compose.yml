@@ -15,8 +15,6 @@ services:
     cap_drop:
       - ALL
 
-  # Analytics does not depend on TransloadOracle. That integration is off
-  # unless TRANSLOAD_ORACLE_ENABLED=true.
   analytics:
     build:
       context: .

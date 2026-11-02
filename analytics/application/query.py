@@ -77,7 +77,6 @@ class QueryService:
                 }
             },
             "output_coordinates": self.output_coordinates_document()["effective"],
-            "transload_oracle": _transload_oracle_health(state),
         }
 
     def events(self) -> list[object]:
@@ -231,26 +230,6 @@ class QueryService:
         state = self._state
         moment = as_of or datetime.now(UTC)
         return {"activities": [_activity_row(item, moment, state) for item in state._correlations]}
-
-
-def _transload_oracle_health(state: AnalyticsState) -> dict[str, object]:
-    """Status only. The base URL is not copied into /health."""
-
-    enabled = state.settings.transload_oracle_enabled
-    configured = bool(state.settings.transload_oracle_base_url)
-    if not enabled:
-        status = "disabled"
-    elif state.transload_oracle is None or not configured:
-        status = "pull-only"
-    else:
-        status = "configured"
-    last = getattr(state.transload_oracle, "last_result", "")
-    return {
-        "enabled": enabled,
-        "status": status,
-        "base_url_configured": configured,
-        "last_push": last if isinstance(last, str) else "",
-    }
 
 
 def _activity_row(

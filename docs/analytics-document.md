@@ -116,7 +116,7 @@ The body uses the same keys as the card (`coordinate_format`,
 clears the override. The file is `output-coordinates.json` in the
 reference directory and is loaded again on startup.
 
-An optional TransloadOracle client can read `effective.format` and `effective.source` to show
+An external client can read `effective.format` and `effective.source` to show
 the analyst toggle, and sends the PUT to change or revert it. A failed
 MGRS conversion, including a polar point the library cannot encode,
 publishes decimal lat/lon and logs a warning. UPS strings are used when

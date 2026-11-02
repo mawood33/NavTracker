@@ -3,8 +3,8 @@
 Use this when ChatSurfer is not available. Development ingest does not
 read Navixy. Analytics can still be filled from TACREP text produced by
 [navtracker_tacrep](https://github.com/mawood33/navtracker_tacrep) and
-from a Navixy JSON replay. TransloadOracle is optional and stays off
-unless you enable it at the end of this page.
+from a Navixy JSON replay. TransloadOracle is a separate program. It
+reads this API when it wants to. NavTracker does not call it.
 
 Commands are `python` invocations. They do not use a shell `NAME=value`
 prefix, so the same lines work in VS Code's terminal on Windows
@@ -19,7 +19,7 @@ that file exists. A variable already set in the environment is kept.
 | TACREP parse, tracks, correlations | `fixtures/dev/tacrep_track.txt` (also `.json`) | `GET /tracks`, `GET /v1/events/correlations`, the dashboard Tracks list |
 | Navixy-shaped fixes | `fixtures/dev/navixy_halt.json` | `POST /v1/dev/fixes` (development only), then the same tracks |
 | Transload near an MSR | The TACREP fixture plus `fixtures/dev/reference/` | `GET /aois` and the dashboard Sites list after analysis |
-| TransloadOracle | Off by default | `GET /health` field `transload_oracle` |
+| An external consumer | The same running API | See TransloadOracle below |
 
 `fixtures/dev/tacrep_track.txt` is five MTI lines in the companion shape:
 
@@ -30,9 +30,13 @@ REAPER 21//TACREP 2//1 MVR HALT//BULL-1//01000//N3713.10 E12812.00//MSR BURGUNDY
 
 `TACREP 1` is the serial. `01000` is the LINK-16 track number and stays
 constant for REAPER 21, so those reports are one track `link16:01000`.
-REAPER 22 uses `01001`. `1 MVR` is one moving vehicle. `SW` is heading
-225. `9 MPH` is stored as meters per second. `1 MVR HALT` has no speed
-or direction; the track point is 0 m/s. `IVO 10105` is the place name.
+A track number is exactly five letters or digits, kept as written aside
+from upper case (`A1B2C` and `a1b2c` are `link16:A1B2C`). It is not a
+decimal or octal number, and it is not zero-padded: `1000` is four
+characters, so that field is ignored and a warning is logged. REAPER 22
+uses `01001`. `1 MVR` is one moving vehicle. `SW` is heading 225. `9 MPH`
+is stored as meters per second. `1 MVR HALT` has no speed or direction;
+the track point is 0 m/s. `IVO 10105` is the place name.
 `MSR BURGUNDY` is the route. The two halts at 1915Z and 1920Z are five
 minutes apart, which is long enough for a stop. A second mover halts
 beside site `10105` on that MSR, which is the transload case.
@@ -71,7 +75,6 @@ ANALYTICS_READ_TOKEN=dev
 ANALYTICS_WRITE_TOKEN=dev
 ANALYTICS_COORD_CARD=config/analytics/coord_card.example.yaml
 ANALYTICS_REFERENCE_DIR=fixtures/dev/reference
-TRANSLOAD_ORACLE_ENABLED=false
 LOG_FILE=logs/analytics.log
 ```
 
@@ -87,7 +90,6 @@ ChatSurfer. A configured `read_rooms` list does not by itself open a
 client. Turning reads or event publish on again requires the certificate
 paths in the analytics YAML to exist.
 Empty API tokens fail closed: replay and the dashboard need `dev`.
-Leave `TRANSLOAD_ORACLE_ENABLED` false.
 
 Start analytics:
 
@@ -97,15 +99,14 @@ python scripts/run_analytics.py
 
 `scripts/run_analytics.py` puts the repo and `packages/navtracker_common`
 on `sys.path`, then loads `.env` and serves `http://127.0.0.1:8080`.
-The log line `TransloadOracle integration disabled` means that
-integration was not started. `GET /health` answers before any external
-system is contacted:
+`GET /health` answers before any external system is contacted:
 
 ```text
 python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health').read().decode())"
 ```
 
-`transload_oracle.status` is `disabled`.
+The payload has no TransloadOracle status. NavTracker does not know
+whether that program is running.
 
 Docker on Windows is the same `.env` with one difference: do not set
 `ANALYTICS_REFERENCE_DIR` in `.env` if you use Compose, because the
@@ -172,8 +173,13 @@ area type includes `transload`.
 There is no live Navixy socket in this path. `POST /v1/dev/fixes`
 accepts a Navixy `state_batch`, a `tracker/get_state` body, or
 `{"fixes": [...]}`. It exists only when `APP_ENV=development`. Any
-other environment returns 404. `gps.speed` is kilometers per hour.
-Objects that already contain `speed_mps` are meters per second.
+other environment returns 404. Navixy `gps.speed` is kilometers per
+hour and is stored as meters per second, the same conversion the live
+ingest uses (`36` km/h becomes 10 m/s). Objects that already contain
+`speed_mps` stay meters per second. The published ChatSurfer `speed`
+field and analytics track `speed` are meters per second.
+`ANALYTICS_CHAT_SPEED_UNIT=kmh` is only for a room that still holds
+older copies whose `speed` was kilometers per hour.
 
 ```text
 python scripts/replay_navixy.py --file fixtures/dev/navixy_halt.json --token dev
@@ -219,52 +225,46 @@ With Docker the same page is:
 docker compose --profile frontend up analytics-frontend
 ```
 
-That container serves port 8081 and does not run TransloadOracle.
+That container serves the dashboard on port 8081.
 
-## 5. TransloadOracle, optional
+## 5. TransloadOracle as a consumer
 
-NavTracker does not import TransloadOracle, does not list it in
-Compose, and does not check it at startup. The hide / launch /
-transload rules, the H3 grid, and the routing defaults are local code.
-They keep running when TransloadOracle is absent.
+TransloadOracle is a separate application. NavTracker does not import
+it, configure it, or send it anything. Hide, launch, and transload
+rules, the H3 grid, and routing are NavTracker behavior. They run
+whether or not TransloadOracle is installed.
 
-`GET /health` reports the switch:
+When you want that screen against this API, it pulls:
 
-| `TRANSLOAD_ORACLE_ENABLED` | `TRANSLOAD_ORACLE_BASE_URL` | `transload_oracle.status` | Outbound call |
-| --- | --- | --- | --- |
-| false or unset | ignored | `disabled` | none |
-| true | empty | `pull-only` | none |
-| true | a URL | `configured` | POST of each analytics snapshot or diff |
+- `GET /api/sites`, `GET /cells`, `GET /msrs`, `GET /events`
+- `GET /api/tracks` and the OGC tracks collection
+- `GET /v1/activities`, `GET /v1/events/correlations`
+- `GET /geojson`, `GET /ogc`
+- the `/ws` snapshot, using the read token (the write token also grants read)
 
-To turn the push on, edit `.env` and restart analytics:
+It has no inbound endpoint for NavTracker to call.
+
+In the TransloadOracle repo, standalone development is:
 
 ```text
-TRANSLOAD_ORACLE_ENABLED=true
-TRANSLOAD_ORACLE_BASE_URL=http://127.0.0.1:9/ingest
+npm run dev:standalone
 ```
 
-`http://127.0.0.1:9/ingest` refuses the connection. The log line is
-`TransloadOracle unreachable (...); NavTracker is continuing without it`.
-The process stays up. `/health` still returns `status: ok`.
-`last_push` becomes `unreachable` after the first analysis pass and
-`ok` after a POST that returns a success status. The base URL is not
-written into `/health`.
+To point it at this process:
 
-While it is `pull-only` or `configured`, a TransloadOracle screen can
-read the same routes it already could:
+```text
+DATA_SOURCE=navtracker
+```
 
-- `GET /api/sites` and `POST /api/sites/{id}/verify`
-- `POST /api/routes` with `originSiteId`, `destinationSiteId`, `vehicleType`, `maxSpeedMph`
-- `GET /tracks` and `GET /api/tracks`
-- `GET /v1/events/correlations`, `GET /v1/activities`, `POST /v1/activities/{id}/advance`
-- `GET /v1/settings/output-coordinates` and the PUT that sets `effective.format`
+with `NAVTRACKER_API_URL`, `NAVTRACKER_WS_URL`, and the read and write
+tokens set to this analytics server (for the steps above,
+`http://127.0.0.1:8080`, `ws://127.0.0.1:8080/ws`, and token `dev`).
+Set those in that program's environment. They are not NavTracker
+settings.
 
-Those routes are NavTracker. They do not open a connection to
-TransloadOracle. To test the transload case without that product, replay
+To exercise a transload on this side without that program, replay
 `fixtures/dev/tacrep_track.txt` against `fixtures/dev/reference/` as in
 section 2. Two movers halt on MSR BURGUNDY next to site 10105.
-
-Set `TRANSLOAD_ORACLE_ENABLED=false` and restart to disable it again.
 
 ## Tests
 
@@ -277,7 +277,7 @@ python -m pytest
 Focused cases:
 
 ```text
-python -m pytest tests/test_tacrep_mvr.py tests/test_dev_replay.py tests/test_transload_oracle_optional.py tests/test_envfile.py
+python -m pytest tests/test_tacrep_mvr.py tests/test_dev_replay.py tests/test_navixy_parse.py tests/test_envfile.py
 ```
 
 ## Not in this pass
@@ -287,8 +287,8 @@ python -m pytest tests/test_tacrep_mvr.py tests/test_dev_replay.py tests/test_tr
   API instead.
 - A live Navixy websocket simulator. The development route accepts a
   saved `state_batch` or `get_state` body.
-- A TransloadOracle server. This repo can push documents at a URL you
-  name, and it can serve the pull API. It does not ship that product.
+- A copy of TransloadOracle. It consumes the API above. This repo does
+  not start it.
 - The private companion generator is not vendored. New TACREP text from
   it should be dropped in as another `--file`. If a future export uses
   a different serial than `TACREP <n>` or a different field order than

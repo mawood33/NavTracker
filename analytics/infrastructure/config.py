@@ -87,7 +87,7 @@ def load_analytics_settings(
         pick_setting(
             "ANALYTICS_CHAT_SPEED_UNIT",
             analytics.get("chat_speed_unit"),
-            "kmh",
+            "mps",
         ),
         _SPEED_UNITS,
     )

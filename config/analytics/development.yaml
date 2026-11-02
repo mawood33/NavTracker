@@ -11,8 +11,10 @@ analytics:
   publish_events: false
   analysis_interval_seconds: 30
   chat_poll_seconds: 15
-  # Navixy speeds copied into ChatSurfer messages are kilometers per hour.
-  chat_speed_unit: kmh
+  # Published ChatSurfer speed is meters per second. Navixy gps.speed
+  # is kilometers per hour and is converted at ingest. Set this to kmh
+  # only for a room that still holds those older copies.
+  chat_speed_unit: mps
   confidence:
     initial_confidence: 0.2
     probable_at: 0.55
@@ -20,8 +22,7 @@ analytics:
     window_seconds: 86400
     decay_per_day: 0
   grid:
-    # H3 resolution 9 is about a 174 m edge. That matches an extracted
-    # TransloadOracle figure. NavTracker does not connect to it for this.
+    # H3 resolution 9 is about a 174 m edge.
     resolution: 9
     window_seconds: 86400
     decay_half_life_seconds: 0
@@ -90,12 +91,6 @@ clairvoyant:
 frontend:
   enabled: false
   ingest_url: ""
-
-# Optional. NavTracker does not call TransloadOracle unless enabled is
-# true and base_url is set. An unreachable URL is logged and ignored.
-transload_oracle:
-  enabled: false
-  base_url: ""
 
 reference:
   columns:

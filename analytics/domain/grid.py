@@ -3,7 +3,7 @@
 H3 is the hex index: one global grid, a configurable resolution, and a
 stable cell id a frontend can join to a hex tile. Resolution 9 is the
 default (about a 174 m edge). Resolution 8 is the wider alternative
-(about 460 m). NavTracker does not call TransloadOracle for this grid.
+(about 460 m).
 
 Each cell keeps the stops inside ``window_seconds``. When
 ``decay_half_life_seconds`` is 0, which is the default, every stop in

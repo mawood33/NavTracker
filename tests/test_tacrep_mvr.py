@@ -1,5 +1,6 @@
 """Companion-tool MTI lines: MVR, cardinals, IVO, and LINK-16 tracks."""
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from analytics.domain.coordcard import CoordCard
 from analytics.domain.correlation import correlate
 from analytics.domain.positions import parse_fillins
 from analytics.domain.tacrep_parse import parse_tacrep_body
-from analytics.domain.tracks import canonical_link16
+from analytics.domain.tracks import canonical_link16, link16_vehicle_id
 
 T0 = datetime(2026, 1, 1, 20, 0, tzinfo=UTC)
 CARD = Path("config/analytics/coord_card.example.yaml").read_text(encoding="utf-8")
@@ -74,7 +75,30 @@ def test_tacrep_id_parses_on_an_empty_card_and_does_not_collapse_the_series():
     )
     assert [item.serial_full for item in messages] == ["TACREP 1", "TACREP 2"]
     assert {item.tacrep_type for item in messages} == {"MTI"}
-    assert canonical_link16("01000") == canonical_link16("1000") == "01000"
+    assert canonical_link16("01000") == "01000"
+    assert canonical_link16("a1b2c") == "A1B2C"
+    assert canonical_link16("1000") == ""
+    assert canonical_link16("010000") == ""
+    assert link16_vehicle_id((("link16", "a1b2c"),)) == "link16:A1B2C"
+
+
+def test_invalid_link16_is_ignored(caplog):
+    caplog.set_level(logging.WARNING)
+    text = MOVING.replace("//01000//", "//1000//")
+    message = _parse(text)[0]
+    assert ("link16", "1000") in message.attributes
+    assert link16_vehicle_id(message.attributes) == ""
+    assert "Ignoring LINK-16" in caplog.text
+    letters = _parse(MOVING.replace("//01000//", "//A1B2C//"))[0]
+    assert link16_vehicle_id(letters.attributes) == "link16:A1B2C"
+    service = AnalyticsService(
+        _settings(
+            environment="development",
+            coord_card_path="config/analytics/coord_card.example.yaml",
+        )
+    )
+    service.ingest_tacrep_body(MOVING.replace("//01000//", "//a1b2c//"), "dev")
+    assert [fix.vehicle_id for fix in service.tracks()] == ["link16:A1B2C"]
 
 
 def test_same_link16_joins_distant_reports_inside_the_window():

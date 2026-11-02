@@ -7,7 +7,8 @@ reads both, with the poll shape winning when both are present:
 - altitude: ``gps.alt``, then ``gps.altitude``, then top-level ``alt``,
   then top-level ``altitude``
 - time: ``gps.updated``, then ``timestamp``, then ``updated``
-- speed and heading: the ``gps`` value, otherwise the top-level value
+- speed and heading: the ``gps`` value, otherwise the top-level value.
+  ``gps.speed`` is kilometers per hour and is stored as meters per second.
 - ``connection_status`` and ``movement_status`` from the state object
 
 A missing timestamp stays missing. It is not replaced with the clock.
@@ -27,6 +28,7 @@ from typing import Any
 from app.domain.entities import TrackerPosition
 from app.domain.errors import TrackerDiscoveryError
 from navtracker_common.timeutil import account_timezone, ensure_utc
+from navtracker_common.units import kmh_to_mps
 
 
 def parse_poll_response(payload: Any, tracker_id: int) -> TrackerPosition:
@@ -142,7 +144,7 @@ def parse_state(
         longitude=longitude,
         timestamp=timestamp,
         received_timestamp=received,
-        speed=_first_float(gps_dict.get("speed"), state.get("speed")),
+        speed=_kmh(_first_float(gps_dict.get("speed"), state.get("speed"))),
         heading=_first_float(gps_dict.get("heading"), state.get("heading")),
         altitude=_first_float(
             gps_dict.get("alt"),
@@ -195,6 +197,12 @@ def _as_int(value: object) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _kmh(kilometers_per_hour: float | None) -> float | None:
+    if kilometers_per_hour is None:
+        return None
+    return kmh_to_mps(kilometers_per_hour)
 
 
 def _first_float(*values: object) -> float | None:

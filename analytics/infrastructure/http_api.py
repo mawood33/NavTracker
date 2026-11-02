@@ -52,7 +52,7 @@ class SiteView(Protocol):
         """Loaded known sites."""
 
     def api_sites(self) -> list[dict[str, object]]:
-        """Sites in the web list a TransloadOracle client may pull."""
+        """Sites in the shorter web list."""
 
     def verify_site(self, name: str) -> Mapping[str, object]:
         """Mark a site confirmed from manual or truth data."""

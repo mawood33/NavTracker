@@ -103,7 +103,7 @@ def test_websocket_flat_event_keeps_status_and_altitude():
             latitude=1.5,
             longitude=2.5,
             timestamp=WHEN,
-            speed=4.0,
+            speed=4.0 / 3.6,
             heading=5.0,
             altitude=4.0,
             connection_status="idle",
@@ -111,6 +111,22 @@ def test_websocket_flat_event_keeps_status_and_altitude():
             received_timestamp=WHEN,
         )
     ]
+
+
+def test_navixy_speed_is_kilometers_per_hour_and_stored_as_meters_per_second():
+    position = parse_state(
+        {
+            "tracker_id": 21,
+            "gps": {
+                "updated": "2026-01-01T00:00:00Z",
+                "location": {"lat": 10.0, "lng": 20.0},
+                "speed": 36,
+            },
+        }
+    )
+    assert position is not None
+    assert position.speed == 10.0
+    assert to_outbound_message(position).speed == 10.0
 
 
 def test_nested_gps_wins_over_flat_coordinates():

@@ -1,9 +1,9 @@
 """Read TACREP text and Navixy JSON for development replay.
 
 File bytes stay here so the HTTP handler and the scripts share one
-parser. Navixy ``gps.speed`` is kilometers per hour, matching the speed
-copied into ChatSurfer. A replay object that already has ``speed_mps``
-is meters per second.
+parser. Navixy ``gps.speed`` is kilometers per hour and is converted to
+meters per second, the same conversion as live ingest. A replay object
+that already has ``speed_mps`` is left in meters per second.
 """
 
 import csv
@@ -11,6 +11,8 @@ import io
 import json
 from collections.abc import Mapping
 from pathlib import Path
+
+from navtracker_common.units import kmh_to_mps
 
 
 def read_tacrep_file(path: Path) -> str:
@@ -185,13 +187,13 @@ def _speed_mps(item: Mapping[str, object], gps: Mapping[str, object]) -> float |
         speed = _float(gps.get("speed", item.get("speed")))
         if speed is None:
             return None
-        return speed / 3.6
+        return kmh_to_mps(speed)
     speed = _float(item.get("speed"))
     if speed is None:
         return None
     unit = str(item.get("speed_unit", "mps") or "mps").strip().lower()
     if unit in {"kmh", "km/h"}:
-        return speed / 3.6
+        return kmh_to_mps(speed)
     return speed
 
 

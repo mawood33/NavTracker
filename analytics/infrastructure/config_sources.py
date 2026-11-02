@@ -109,9 +109,6 @@ def _columns(reference: dict[str, object]) -> ColumnMap:
 def _frontend_block(loaded: dict[str, object]) -> dict[str, object]:
     return _nested(loaded.get("frontend"), "frontend")
 
-def _transload_oracle_block(loaded: dict[str, object]) -> dict[str, object]:
-    return _nested(loaded.get("transload_oracle"), "transload_oracle")
-
 def _chat_read_enabled(
     environment: str,
     chatsurfer: dict[str, object],
@@ -376,17 +373,5 @@ def source_settings(
                     "ANALYTICS_FRONTEND_INGEST_URL",
                     str(_frontend_block(loaded).get("ingest_url", "")),
                 ).strip(),
-        "transload_oracle_enabled": _bool_setting(
-            "TRANSLOAD_ORACLE_ENABLED",
-            pick_setting(
-                "TRANSLOAD_ORACLE_ENABLED",
-                _transload_oracle_block(loaded).get("enabled"),
-                False,
-            ),
-        ),
-        "transload_oracle_base_url": env_setting(
-            "TRANSLOAD_ORACLE_BASE_URL",
-            str(_transload_oracle_block(loaded).get("base_url", "")),
-        ).strip(),
         "columns": _columns(reference),
     }
