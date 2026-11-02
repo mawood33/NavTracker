@@ -201,24 +201,38 @@ In a third terminal:
 python -m http.server 8081 --directory analytics/frontend
 ```
 
-Open:
+Open either of these. `localhost` and `127.0.0.1` are different origins,
+and both are listed for development:
 
 ```text
+http://localhost:8081/?token=dev&api=http://localhost:8080
 http://127.0.0.1:8081/?token=dev&api=http://127.0.0.1:8080&ws=ws://127.0.0.1:8080/ws
 ```
 
-Click Connect. The page lists sites and track points from the snapshot.
-`token=dev` is sent on the WebSocket and on the route request. The write
-token also grants read.
+The Token box is filled from `?token=` when that is present, and otherwise
+from the value saved in this browser. Editing the box and leaving the
+field stores it again. Estimate sends `Authorization: Bearer` with that
+value. A 401 is shown as `Unauthorized: check token matches
+ANALYTICS_READ_TOKEN`. The write token also grants read, so `dev` works
+for both when the server was started with that token.
+
+Click Connect. The status line under the button says `connecting`, then
+`open`, or `closed` with the close code, or `error`. The token is added
+to the WebSocket URL as `token=` when that query parameter is not already
+there, including when the box still says `ws://localhost:8080/ws` and
+`?ws=` was not used. The page lists sites and track points from the
+snapshot.
 
 `config/analytics/development.yaml` allows the browser origins
 `http://127.0.0.1:8081` and `http://localhost:8081`. A browser on another
 origin is rejected until `ANALYTICS_WS_ORIGINS` lists it
 (comma-separated). That variable replaces the YAML list when it is set.
 Staging and production leave the list empty, so a browser `Origin`
-header is rejected there. An allowed origin also receives
-`Access-Control-Allow-Origin` on HTTP responses, which is what the
-route button needs. Other origins do not.
+header is rejected there. An allowed origin receives
+`Access-Control-Allow-Origin` on the response and on the `OPTIONS`
+preflight, including `Access-Control-Allow-Headers: Authorization`.
+That is what the Estimate button needs when the page is on port 8081
+and the API is on port 8080. Other origins do not.
 
 With Docker the same page is:
 
