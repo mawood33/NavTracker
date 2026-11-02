@@ -22,9 +22,9 @@ from analytics.infrastructure.config_values import _bool_setting, _choice, _mapp
 from navtracker_common.chatsurfer import encrypted_room_name
 from navtracker_common.crypto import require_public_material
 from navtracker_common.settings import env_setting, pick_setting
+from navtracker_common.units import DEFAULT_CHAT_SPEED_UNIT, parse_chat_speed_unit
 
 _CRYPTO_MODES = {"pem", "ssh", "fernet"}
-_SPEED_UNITS = {"mps", "kmh"}
 _CLAIRVOYANT_MODES = {"websocket", "poll"}
 
 
@@ -82,14 +82,12 @@ def load_analytics_settings(
         raise RuntimeError(
             "Clairvoyant failover requires CLAIRVOYANT_BASE_URL."
         )
-    speed_unit = _choice(
-        "ANALYTICS_CHAT_SPEED_UNIT",
+    speed_unit = parse_chat_speed_unit(
         pick_setting(
             "ANALYTICS_CHAT_SPEED_UNIT",
             analytics.get("chat_speed_unit"),
-            "mps",
-        ),
-        _SPEED_UNITS,
+            DEFAULT_CHAT_SPEED_UNIT,
+        )
     )
     values: dict[str, object] = {"environment": environment}
     values.update(http_settings(analytics))

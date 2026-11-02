@@ -11,10 +11,9 @@ analytics:
   publish_events: false
   analysis_interval_seconds: 30
   chat_poll_seconds: 15
-  # Published ChatSurfer speed is meters per second. Navixy gps.speed
-  # is kilometers per hour and is converted at ingest. Set this to kmh
-  # only for a room that still holds those older copies.
-  chat_speed_unit: mps
+  # ChatSurfer speed field. kmh (default) or mps. The ingest worker
+  # reads the same ANALYTICS_CHAT_SPEED_UNIT. Internal speeds stay m/s.
+  chat_speed_unit: kmh
   confidence:
     initial_confidence: 0.2
     probable_at: 0.55

@@ -13,7 +13,8 @@ SCHEMA_VERSION = 1
 class OutboundMessage:
     """Versioned position document published to ChatSurfer.
 
-    ``speed`` is meters per second, the same unit as a tracker fix.
+    ``speed`` is in ``ANALYTICS_CHAT_SPEED_UNIT`` (``kmh`` by default,
+    or ``mps``). The tracker fix itself stores meters per second.
     """
 
     schema_version: int

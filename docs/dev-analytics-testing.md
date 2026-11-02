@@ -174,12 +174,13 @@ There is no live Navixy socket in this path. `POST /v1/dev/fixes`
 accepts a Navixy `state_batch`, a `tracker/get_state` body, or
 `{"fixes": [...]}`. It exists only when `APP_ENV=development`. Any
 other environment returns 404. Navixy `gps.speed` is kilometers per
-hour and is stored as meters per second, the same conversion the live
-ingest uses (`36` km/h becomes 10 m/s). Objects that already contain
-`speed_mps` stay meters per second. The published ChatSurfer `speed`
-field and analytics track `speed` are meters per second.
-`ANALYTICS_CHAT_SPEED_UNIT=kmh` is only for a room that still holds
-older copies whose `speed` was kilometers per hour.
+hour. Live ingest and this replay convert it to meters per second
+(`36` km/h becomes 10 m/s) for stored fixes and analytics tracks.
+Objects that already contain `speed_mps` stay meters per second.
+`ANALYTICS_CHAT_SPEED_UNIT` defaults to `kmh`: that is the unit of the
+`speed` field published to ChatSurfer and the unit analytics uses when
+it reads that field. `mps` switches both sides to meters per second.
+Set it in `.env` so the ingest process and analytics use the same value.
 
 ```text
 python scripts/replay_navixy.py --file fixtures/dev/navixy_halt.json --token dev

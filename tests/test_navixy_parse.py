@@ -10,6 +10,7 @@ from app.infrastructure.navixy_parse import (
     parse_websocket_event,
 )
 
+from analytics.domain.tracks import fix_from_mapping
 from navtracker_common.timeutil import (
     format_zulu,
     set_account_timezone,
@@ -126,7 +127,20 @@ def test_navixy_speed_is_kilometers_per_hour_and_stored_as_meters_per_second():
     )
     assert position is not None
     assert position.speed == 10.0
-    assert to_outbound_message(position).speed == 10.0
+    published = to_outbound_message(position)
+    assert published.speed == 36.0
+    read_back = fix_from_mapping(published.to_payload(), source="chat", speed_unit="kmh")
+    assert read_back is not None
+    assert read_back.speed_mps == 10.0
+    published_mps = to_outbound_message(position, speed_unit="mps")
+    assert published_mps.speed == 10.0
+    read_mps = fix_from_mapping(
+        published_mps.to_payload(),
+        source="chat",
+        speed_unit="mps",
+    )
+    assert read_mps is not None
+    assert read_mps.speed_mps == 10.0
 
 
 def test_nested_gps_wins_over_flat_coordinates():

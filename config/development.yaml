@@ -19,6 +19,8 @@ chatsurfer:
   rate_limit: 60
   max_message_size: 4000
   encryption_required: true
+  # Same ANALYTICS_CHAT_SPEED_UNIT analytics reads. kmh or mps.
+  speed_unit: kmh
 
 # mode: pem, update cert/key to tls.crt/tls.key
 # mode: ssh, update cert/key to id_rsa.pub/id_rsa

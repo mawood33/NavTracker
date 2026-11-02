@@ -9,6 +9,7 @@ from app.application.messages import to_outbound_message
 from app.domain.entities import TrackerPosition
 from app.domain.ports import MessagePublisher
 from navtracker_common.timeutil import ensure_utc, format_zulu
+from navtracker_common.units import DEFAULT_CHAT_SPEED_UNIT
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class LatestFixRetry:
         max_attempts: int = PUBLISH_MAX_ATTEMPTS,
         backoff_initial: float = PUBLISH_BACKOFF_INITIAL_SECONDS,
         backoff_cap: float = PUBLISH_BACKOFF_CAP_SECONDS,
+        speed_unit: str = DEFAULT_CHAT_SPEED_UNIT,
     ):
         self.publisher = publisher
         self.clock = clock
@@ -100,6 +102,7 @@ class LatestFixRetry:
         self.max_attempts = max_attempts
         self.backoff_initial = backoff_initial
         self.backoff_cap = backoff_cap
+        self.speed_unit = speed_unit
         self._pending: dict[int, _Pending] = {}
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
@@ -188,7 +191,9 @@ class LatestFixRetry:
 
     async def _attempt(self, position: TrackerPosition) -> BaseException | None:
         try:
-            await self.publisher.publish(to_outbound_message(position))
+            await self.publisher.publish(
+                to_outbound_message(position, speed_unit=self.speed_unit)
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

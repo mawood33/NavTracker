@@ -374,7 +374,17 @@ def test_checked_in_analytics_defaults():
     assert production.routing_engine == "msr"
     assert production.http_host == "127.0.0.1"
     assert settings.max_fixes_per_vehicle == 100
-    assert settings.chat_speed_unit == "mps"
+    assert settings.chat_speed_unit == "kmh"
+
+
+def test_chat_speed_unit_env_switches_analytics_to_mps(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("CHAT_SURFER_API_KEY", "dummy")
+    monkeypatch.setenv("ANALYTICS_CHAT_SPEED_UNIT", "mps")
+    assert load_analytics_settings().chat_speed_unit == "mps"
+    monkeypatch.setenv("ANALYTICS_CHAT_SPEED_UNIT", "knots")
+    with pytest.raises(RuntimeError, match="ANALYTICS_CHAT_SPEED_UNIT"):
+        load_analytics_settings()
 
 
 def test_mapbox_settings_require_a_token(monkeypatch: pytest.MonkeyPatch):

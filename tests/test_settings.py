@@ -39,6 +39,7 @@ _SETTINGS_ENV = (
     "ENCRYPTION_KEY",
     "MODE",
     "FERNET_KEY",
+    "ANALYTICS_CHAT_SPEED_UNIT",
 )
 
 
@@ -47,6 +48,16 @@ def _scrub(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("NAVIXY_API_KEY", "navixy-key")
     monkeypatch.setenv("CHAT_SURFER_API_KEY", "chat-key")
+
+
+def test_chat_speed_unit_defaults_to_kmh_and_accepts_mps(monkeypatch):
+    _scrub(monkeypatch)
+    assert load_settings().chat_speed_unit == "kmh"
+    monkeypatch.setenv("ANALYTICS_CHAT_SPEED_UNIT", "mps")
+    assert load_settings().chat_speed_unit == "mps"
+    monkeypatch.setenv("ANALYTICS_CHAT_SPEED_UNIT", "knots")
+    with pytest.raises(RuntimeError, match="ANALYTICS_CHAT_SPEED_UNIT"):
+        load_settings()
 
 
 def test_pem_mode_treats_yaml_none_as_an_unset_fernet_key(monkeypatch):
